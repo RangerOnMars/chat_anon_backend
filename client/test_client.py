@@ -415,17 +415,195 @@ async def interactive_session(client: ChatAnonClient, save_audio: bool = False,
             print(f"\n[Error] {e}\n")
 
 
-async def voice_mode_session(client: ChatAnonClient):
+async def agent_mode_session(client: ChatAnonClient):
     """
-    Run a voice conversation session.
-    Records audio from microphone, sends to server, plays response.
+    Run a continuous voice conversation session - no button presses required.
+    
+    This mode uses server-side VAD (Voice Activity Detection) to automatically
+    detect when you finish speaking and process the response.
+    
+    Just speak naturally - the system will:
+    1. Listen continuously
+    2. Detect when you stop speaking (via VAD)
+    3. Process your speech through LLM
+    4. Play the response
+    5. Return to listening mode automatically
     """
     if not client.enable_audio:
         print("[Error] Audio not available. Install pyaudio: pip install pyaudio")
         return
     
     print("\n" + "="*60)
-    print("ChatAnon Voice Mode")
+    print("ChatAnon Agent Mode (Continuous Voice)")
+    print("="*60)
+    print("Speak naturally - no button presses needed!")
+    print("The system will automatically detect when you finish speaking.")
+    print("Press Ctrl+C to exit.")
+    print("="*60 + "\n")
+    
+    # Start agent mode on server
+    await client.websocket.send(json.dumps({
+        "type": "agent_mode_start"
+    }))
+    
+    # State management
+    is_listening = False
+    stop_event = asyncio.Event()
+    
+    async def send_audio():
+        """Continuously send microphone audio to server"""
+        nonlocal is_listening
+        
+        try:
+            client.audio_recorder.start_recording()
+            
+            while not stop_event.is_set():
+                if is_listening:
+                    chunk = client.audio_recorder.read_chunk()
+                    if chunk:
+                        await client.websocket.send(json.dumps({
+                            "type": "agent_audio_chunk",
+                            "audio_base64": base64.b64encode(chunk).decode('utf-8')
+                        }))
+                await asyncio.sleep(0.02)  # 20ms chunks
+                
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"Error in audio sender: {e}")
+        finally:
+            if client.audio_recorder.is_recording:
+                client.audio_recorder.stop_recording()
+    
+    async def receive_responses():
+        """Handle server responses"""
+        nonlocal is_listening
+        
+        partial_text = ""
+        
+        try:
+            while not stop_event.is_set():
+                try:
+                    raw_response = await asyncio.wait_for(
+                        client.websocket.recv(),
+                        timeout=0.1
+                    )
+                    response = json.loads(raw_response)
+                    msg_type = response.get("type", "")
+                    
+                    if msg_type == "agent_listening":
+                        is_listening = True
+                        print("\n[Listening...] Speak now")
+                        partial_text = ""
+                    
+                    elif msg_type == "transcription":
+                        text = response.get("text", "")
+                        is_partial = response.get("is_partial", True)
+                        
+                        if is_partial:
+                            # Show partial transcription (update in place)
+                            print(f"\r[...] {text}          ", end="", flush=True)
+                            partial_text = text
+                        else:
+                            # Final transcription
+                            print(f"\r[You] {text}          ")
+                            is_listening = False  # Stop sending audio while processing
+                    
+                    elif msg_type == "thinking":
+                        print(f"  [{response.get('message', 'Processing...')}]")
+                    
+                    elif msg_type == "audio_chunk":
+                        # Play streaming audio
+                        if response.get("audio_base64"):
+                            client.play_audio(response["audio_base64"])
+                    
+                    elif msg_type == "audio_end":
+                        # Audio streaming complete
+                        pass
+                    
+                    elif msg_type == "response":
+                        cn_text = response.get("content_cn", "")
+                        jp_text = response.get("content_jp", "")
+                        emotion = response.get("emotion", "auto")
+                        print(f"\n[{client.current_character.title()}] {cn_text}")
+                        print(f"  (JP: {jp_text})")
+                        print(f"  [emotion: {emotion}]")
+                        
+                        # Wait for audio to finish playing
+                        if client.audio_player:
+                            client.audio_player.wait_until_done()
+                    
+                    elif msg_type == "error":
+                        print(f"\n[Error] {response.get('message', 'Unknown error')}")
+                    
+                    elif msg_type == "ping":
+                        await client.websocket.send(json.dumps({"type": "pong"}))
+                        
+                except asyncio.TimeoutError:
+                    # No message available, continue
+                    pass
+                    
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"Error in response receiver: {e}")
+    
+    # Create tasks
+    sender_task = asyncio.create_task(send_audio())
+    receiver_task = asyncio.create_task(receive_responses())
+    
+    try:
+        # Wait for Ctrl+C
+        await asyncio.gather(sender_task, receiver_task)
+    except KeyboardInterrupt:
+        print("\n\nExiting agent mode...")
+    finally:
+        # Signal stop
+        stop_event.set()
+        
+        # Cancel tasks
+        sender_task.cancel()
+        receiver_task.cancel()
+        
+        try:
+            await sender_task
+        except asyncio.CancelledError:
+            pass
+        
+        try:
+            await receiver_task
+        except asyncio.CancelledError:
+            pass
+        
+        # Stop agent mode on server
+        try:
+            await client.websocket.send(json.dumps({
+                "type": "agent_mode_stop"
+            }))
+        except:
+            pass
+        
+        # Stop audio
+        if client.audio_recorder and client.audio_recorder.is_recording:
+            client.audio_recorder.stop_recording()
+        if client.audio_player:
+            client.audio_player.stop()
+        
+        print("[Agent mode ended]")
+
+
+async def voice_mode_session(client: ChatAnonClient):
+    """
+    Run a voice conversation session with streaming audio.
+    Records audio from microphone and streams to server in real-time.
+    (Legacy mode - requires pressing Enter to start/stop recording)
+    """
+    if not client.enable_audio:
+        print("[Error] Audio not available. Install pyaudio: pip install pyaudio")
+        return
+    
+    print("\n" + "="*60)
+    print("ChatAnon Voice Mode (Streaming)")
     print("="*60)
     print("Press Enter to start recording, Enter again to stop and send.")
     print("Type 'quit' to exit voice mode.")
@@ -439,39 +617,89 @@ async def voice_mode_session(client: ChatAnonClient):
                 print("Exiting voice mode...")
                 break
             
-            # Start recording
+            # Start streaming ASR session on server
+            await client.websocket.send(json.dumps({
+                "type": "audio_stream_start"
+            }))
+            
+            # Wait for server to confirm
+            start_response = json.loads(await asyncio.wait_for(
+                client.websocket.recv(),
+                timeout=10.0
+            ))
+            
+            if start_response.get("type") == "error":
+                print(f"[Error] {start_response.get('message', 'Failed to start')}")
+                continue
+            
             print("Recording... (press Enter to stop)")
             client.audio_recorder.start_recording()
             
-            # Record until Enter is pressed
-            recording_task = asyncio.create_task(
-                asyncio.get_event_loop().run_in_executor(None, input, "")
-            )
+            # Set up Enter key detection in a separate thread
+            loop = asyncio.get_running_loop()
+            stop_event = asyncio.Event()
             
-            # Read audio chunks while recording
-            while not recording_task.done():
-                chunk = client.audio_recorder.read_chunk()
-                await asyncio.sleep(0.02)  # 20ms chunks
+            async def wait_for_enter():
+                await loop.run_in_executor(None, input, "")
+                stop_event.set()
+            
+            enter_task = asyncio.create_task(wait_for_enter())
+            chunk_count = 0
+            
+            # Stream audio chunks while recording
+            while not stop_event.is_set():
+                try:
+                    # Read audio chunk from microphone
+                    chunk = client.audio_recorder.read_chunk()
+                    
+                    if chunk:
+                        # Send audio chunk to server
+                        await client.websocket.send(json.dumps({
+                            "type": "audio_stream_chunk",
+                            "audio_base64": base64.b64encode(chunk).decode('utf-8')
+                        }))
+                        chunk_count += 1
+                    
+                    # Check for any transcription updates from server (non-blocking)
+                    try:
+                        response = json.loads(await asyncio.wait_for(
+                            client.websocket.recv(),
+                            timeout=0.01
+                        ))
+                        if response.get("type") == "transcription" and response.get("text"):
+                            # Show partial transcription
+                            is_partial = response.get("is_partial", True)
+                            prefix = "[...]" if is_partial else "[You]"
+                            print(f"\r{prefix} {response.get('text')}          ", end="")
+                    except asyncio.TimeoutError:
+                        pass  # No message available, continue recording
+                    
+                    await asyncio.sleep(0.02)  # 20ms chunks
+                    
+                except Exception as e:
+                    logger.error(f"Error streaming audio: {e}")
+                    break
             
             # Stop recording
-            audio_data = client.audio_recorder.stop_recording()
-            print(f"Recorded {len(audio_data)} bytes of audio")
+            client.audio_recorder.stop_recording()
+            print(f"\nSent {chunk_count} audio chunks")
             
-            if len(audio_data) < 3200:  # Less than 0.1 second
-                print("[Warning] Recording too short, skipping...")
-                continue
+            # Cancel the enter task if still running
+            if not enter_task.done():
+                enter_task.cancel()
+                try:
+                    await enter_task
+                except asyncio.CancelledError:
+                    pass
             
-            # Send audio to server for ASR + LLM + TTS
-            print("Sending to server...")
-            
+            # Signal end of audio stream
             await client.websocket.send(json.dumps({
-                "type": "audio_message",
-                "audio_base64": base64.b64encode(audio_data).decode('utf-8'),
-                "audio_format": "pcm",
-                "sample_rate": 16000
+                "type": "audio_stream_end"
             }))
             
-            # Receive response
+            print("Processing...")
+            
+            # Receive response (transcription, thinking, audio chunks, response)
             while True:
                 response = json.loads(await asyncio.wait_for(
                     client.websocket.recv(),
@@ -481,7 +709,9 @@ async def voice_mode_session(client: ChatAnonClient):
                 msg_type = response.get("type", "")
                 
                 if msg_type == "transcription":
-                    print(f"You said: {response.get('text', '')}")
+                    is_partial = response.get("is_partial", True)
+                    if not is_partial:
+                        print(f"You said: {response.get('text', '')}")
                 
                 elif msg_type == "thinking":
                     print(f"  [{response.get('message', 'Thinking...')}]", end="\r")
@@ -491,12 +721,15 @@ async def voice_mode_session(client: ChatAnonClient):
                     if response.get("audio_base64"):
                         client.play_audio(response["audio_base64"])
                 
+                elif msg_type == "audio_end":
+                    # Audio streaming complete
+                    continue
+                
                 elif msg_type == "response":
                     cn_text = response.get("content_cn", "")
                     jp_text = response.get("content_jp", "")
                     print(f"\n{client.current_character.title()}: {cn_text}")
                     print(f"  (JP: {jp_text})")
-                    # DON'T play audio here - already played via streaming audio_chunk
                     break
                 
                 elif msg_type == "error":
@@ -537,9 +770,9 @@ async def main():
     )
     parser.add_argument(
         "--mode", "-m",
-        choices=["text", "voice"],
+        choices=["text", "voice", "agent"],
         default="text",
-        help="Interaction mode: text or voice (default: text)"
+        help="Interaction mode: text, voice, or agent (default: text). Agent mode is hands-free continuous voice."
     )
     parser.add_argument(
         "--save-audio",
@@ -564,8 +797,8 @@ async def main():
     logging.basicConfig(level=log_level, format='%(name)s - %(levelname)s - %(message)s')
     
     # Check audio availability
-    if args.mode == "voice" and not PYAUDIO_AVAILABLE:
-        print("[Error] Voice mode requires pyaudio. Install with: pip install pyaudio")
+    if args.mode in ["voice", "agent"] and not PYAUDIO_AVAILABLE:
+        print(f"[Error] {args.mode.title()} mode requires pyaudio. Install with: pip install pyaudio")
         return 1
     
     # Create client
@@ -582,7 +815,9 @@ async def main():
         return 1
     
     try:
-        if args.mode == "voice":
+        if args.mode == "agent":
+            await agent_mode_session(client)
+        elif args.mode == "voice":
             await voice_mode_session(client)
         else:
             await interactive_session(

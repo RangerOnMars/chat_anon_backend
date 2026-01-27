@@ -9,7 +9,7 @@ import gzip
 import uuid
 import json
 import logging
-from typing import AsyncGenerator, Optional
+from typing import AsyncGenerator, Optional, List
 
 from services.base import StreamingService, ServiceConfig
 
@@ -305,3 +305,166 @@ class ASRService(StreamingService):
         """Stop recording"""
         self.is_recording = False
         logger.info("Stopping ASR recording")
+    
+    # ========== Streaming Session Methods ==========
+    
+    async def start_streaming_session(self):
+        """
+        Start a streaming ASR session.
+        Call this before sending audio chunks.
+        """
+        if not self.is_connected:
+            await self.connect()
+        
+        self.seq = 1
+        self.is_recording = True
+        self._outputted_utterances = set()
+        
+        await self._send_initial_request()
+        logger.info("ASR streaming session started")
+    
+    async def send_audio_chunk(self, audio_chunk: bytes, is_last: bool = False):
+        """
+        Send a single audio chunk to the ASR service.
+        
+        Args:
+            audio_chunk: PCM audio data bytes
+            is_last: Whether this is the final chunk
+        """
+        if not self.is_connected or not self.connection:
+            raise RuntimeError("ASR session not started. Call start_streaming_session() first.")
+        
+        request = self._build_audio_request(audio_chunk, is_last=is_last)
+        await self.connection.send_bytes(request)
+        self.seq += 1
+        
+        if is_last:
+            self.is_recording = False
+            logger.debug("Sent final audio chunk")
+    
+    async def receive_transcription(self) -> Optional[dict]:
+        """
+        Receive a single transcription response from the ASR service.
+        
+        Returns:
+            dict with 'text' (if available), 'is_partial', and 'is_last' fields
+            Returns None if connection is closed
+        """
+        if not self.is_connected or not self.connection:
+            return None
+        
+        try:
+            msg = await asyncio.wait_for(self.connection.receive(), timeout=0.1)
+            
+            if msg.type == aiohttp.WSMsgType.BINARY:
+                response = self._parse_response(msg.data)
+                result = {
+                    "is_last": response.get("is_last", False),
+                    "is_partial": True,
+                    "text": None
+                }
+                
+                if 'data' in response and isinstance(response['data'], dict):
+                    data = response['data'].get('result', {})
+                    utterances = data.get('utterances', [])
+                    
+                    texts = []
+                    for utterance in utterances:
+                        if isinstance(utterance, dict):
+                            is_definite = utterance.get('definite', False)
+                            text = utterance.get('text', '').strip()
+                            
+                            if text:
+                                if is_definite:
+                                    start_time = utterance.get('start_time', -1)
+                                    end_time = utterance.get('end_time', -1)
+                                    utterance_id = (start_time, end_time, text)
+                                    
+                                    if utterance_id not in self._outputted_utterances:
+                                        self._outputted_utterances.add(utterance_id)
+                                        texts.append(text)
+                                        result["is_partial"] = False
+                                else:
+                                    # Partial transcription (not definite)
+                                    texts.append(text)
+                    
+                    if texts:
+                        result["text"] = " ".join(texts)
+                
+                return result
+            
+            elif msg.type == aiohttp.WSMsgType.ERROR:
+                logger.error(f"WebSocket error: {msg.data}")
+                return {"is_last": True, "is_partial": False, "text": None, "error": str(msg.data)}
+            
+            elif msg.type == aiohttp.WSMsgType.CLOSED:
+                logger.info("WebSocket closed")
+                return {"is_last": True, "is_partial": False, "text": None}
+                
+        except asyncio.TimeoutError:
+            # No message available yet
+            return {"is_last": False, "is_partial": True, "text": None}
+        except Exception as e:
+            logger.error(f"Error receiving transcription: {e}")
+            return {"is_last": True, "is_partial": False, "text": None, "error": str(e)}
+        
+        return None
+    
+    async def finish_streaming_session(self) -> list:
+        """
+        Finish the streaming session and collect final transcriptions.
+        
+        Returns:
+            List of final transcribed texts
+        """
+        final_texts = []
+        
+        # Keep receiving until we get the final response
+        while True:
+            result = await self.receive_transcription()
+            
+            if result is None:
+                break
+            
+            if result.get("text") and not result.get("is_partial"):
+                final_texts.append(result["text"])
+            
+            if result.get("is_last"):
+                break
+        
+        logger.info(f"ASR streaming session finished with {len(final_texts)} transcriptions")
+        return final_texts
+    
+    async def reset_for_next_turn(self):
+        """
+        Reset ASR session for next conversation turn.
+        Disconnects current session and prepares for new streaming.
+        Used in agent mode for multi-turn conversations.
+        """
+        # Close current connection
+        if self.connection:
+            try:
+                await self.connection.close()
+            except Exception as e:
+                logger.warning(f"Error closing ASR connection: {e}")
+            self.connection = None
+        
+        if self.session:
+            try:
+                await self.session.close()
+            except Exception as e:
+                logger.warning(f"Error closing ASR session: {e}")
+            self.session = None
+        
+        self._connected = False
+        self._closed = False
+        self.is_recording = False
+        self.seq = 1
+        self._outputted_utterances = set()
+        
+        # Reconnect and start new streaming session
+        await self.connect()
+        await self._send_initial_request()
+        self.is_recording = True
+        
+        logger.info("ASR session reset for next turn")
