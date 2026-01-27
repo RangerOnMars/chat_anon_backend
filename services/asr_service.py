@@ -1,0 +1,307 @@
+"""
+ASR Service - Speech-to-Text using ByteDance ASR API
+Provides WebSocket-based streaming speech recognition
+"""
+import asyncio
+import aiohttp
+import struct
+import gzip
+import uuid
+import json
+import logging
+from typing import AsyncGenerator, Optional
+
+from services.base import StreamingService, ServiceConfig
+
+logger = logging.getLogger(__name__)
+
+
+class ProtocolVersion:
+    V1 = 0b0001
+
+
+class MessageType:
+    CLIENT_FULL_REQUEST = 0b0001
+    CLIENT_AUDIO_ONLY_REQUEST = 0b0010
+    SERVER_FULL_RESPONSE = 0b1001
+    SERVER_ERROR_RESPONSE = 0b1111
+
+
+class MessageTypeSpecificFlags:
+    NO_SEQUENCE = 0b0000
+    POS_SEQUENCE = 0b0001
+    NEG_SEQUENCE = 0b0010
+    NEG_WITH_SEQUENCE = 0b0011
+
+
+class SerializationType:
+    NO_SERIALIZATION = 0b0000
+    JSON = 0b0001
+
+
+class CompressionType:
+    GZIP = 0b0001
+
+
+class ASRService(StreamingService):
+    """ASR Service for real-time speech recognition"""
+    
+    def __init__(self, config: ServiceConfig):
+        super().__init__(config)
+        self.session: Optional[aiohttp.ClientSession] = None
+        self.connection: Optional[aiohttp.ClientWebSocketResponse] = None
+        self.seq = 1
+        self.is_recording = False
+        
+        self.sample_rate = config.asr_sample_rate
+        self.channels = config.audio_channels
+        self.bits = config.audio_bits
+        self.segment_duration_ms = config.asr_segment_duration_ms
+        self.segment_size = self._calculate_segment_size()
+    
+    def _calculate_segment_size(self) -> int:
+        """Calculate audio segment size in bytes"""
+        size_per_sec = self.channels * (self.bits // 8) * self.sample_rate
+        return size_per_sec * self.segment_duration_ms // 1000
+    
+    async def connect(self):
+        """Establish WebSocket connection to ASR service"""
+        if self._connected:
+            return
+        
+        headers = {
+            "X-Api-Resource-Id": self.config.asr_resource_id,
+            "X-Api-Request-Id": str(uuid.uuid4()),
+            "X-Api-Access-Key": self.config.access_key,
+            "X-Api-App-Key": self.config.app_key
+        }
+        
+        try:
+            self.session = aiohttp.ClientSession()
+            self.connection = await self.session.ws_connect(
+                self.config.asr_endpoint,
+                headers=headers
+            )
+            self._connected = True
+            logger.info(f"ASR service connected to {self.config.asr_endpoint}")
+        except Exception as e:
+            logger.error(f"Failed to connect to ASR service: {e}")
+            if self.session:
+                await self.session.close()
+            raise
+    
+    async def disconnect(self):
+        """Close WebSocket connection"""
+        self.is_recording = False
+        
+        if self.connection:
+            try:
+                await self.connection.close()
+            except Exception as e:
+                logger.warning(f"Error closing ASR connection: {e}")
+        
+        if self.session:
+            try:
+                await self.session.close()
+            except Exception as e:
+                logger.warning(f"Error closing ASR session: {e}")
+        
+        self._connected = False
+        self._closed = True
+        logger.info("ASR service disconnected")
+    
+    def _build_header(self, message_type: int, flags: int) -> bytes:
+        """Build protocol header"""
+        header = bytearray()
+        header.append((ProtocolVersion.V1 << 4) | 1)
+        header.append((message_type << 4) | flags)
+        header.append((SerializationType.JSON << 4) | CompressionType.GZIP)
+        header.append(0x00)  # reserved
+        return bytes(header)
+    
+    def _build_full_request(self) -> bytes:
+        """Build initial full client request"""
+        header = self._build_header(
+            MessageType.CLIENT_FULL_REQUEST,
+            MessageTypeSpecificFlags.POS_SEQUENCE
+        )
+        
+        payload = {
+            "user": {"uid": "server_uid"},
+            "audio": {
+                "format": "pcm",
+                "codec": "raw",
+                "rate": self.sample_rate,
+                "bits": self.bits,
+                "channel": self.channels
+            },
+            "request": {
+                "model_name": "bigmodel",
+                "enable_itn": True,
+                "enable_punc": True,
+                "enable_ddc": True,
+                "show_utterances": True,
+                "enable_nonstream": True
+            }
+        }
+        
+        payload_bytes = json.dumps(payload).encode('utf-8')
+        compressed_payload = gzip.compress(payload_bytes)
+        
+        request = bytearray()
+        request.extend(header)
+        request.extend(struct.pack('>i', self.seq))
+        request.extend(struct.pack('>I', len(compressed_payload)))
+        request.extend(compressed_payload)
+        
+        return bytes(request)
+    
+    def _build_audio_request(self, audio_data: bytes, is_last: bool = False) -> bytes:
+        """Build audio-only request"""
+        seq = self.seq
+        flags = MessageTypeSpecificFlags.POS_SEQUENCE
+        
+        if is_last:
+            flags = MessageTypeSpecificFlags.NEG_WITH_SEQUENCE
+            seq = -seq
+        
+        header = self._build_header(MessageType.CLIENT_AUDIO_ONLY_REQUEST, flags)
+        compressed_data = gzip.compress(audio_data)
+        
+        request = bytearray()
+        request.extend(header)
+        request.extend(struct.pack('>i', seq))
+        request.extend(struct.pack('>I', len(compressed_data)))
+        request.extend(compressed_data)
+        
+        return bytes(request)
+    
+    def _parse_response(self, msg: bytes) -> dict:
+        """Parse ASR response"""
+        header_size = msg[0] & 0x0f
+        message_type = msg[1] >> 4
+        flags = msg[1] & 0x0f
+        compression = msg[2] & 0x0f
+        
+        payload = msg[header_size*4:]
+        
+        is_last = bool(flags & 0x02)
+        if flags & 0x01:
+            payload = payload[4:]  # Skip sequence
+        if flags & 0x04:
+            payload = payload[4:]  # Skip event
+        
+        if message_type in [MessageType.SERVER_FULL_RESPONSE, MessageType.SERVER_ERROR_RESPONSE]:
+            if message_type == MessageType.SERVER_ERROR_RESPONSE:
+                payload = payload[4:]  # Skip error code
+            payload_size = struct.unpack('>I', payload[:4])[0]
+            payload = payload[4:]
+        
+        if compression == CompressionType.GZIP and payload:
+            try:
+                payload = gzip.decompress(payload)
+            except Exception as e:
+                logger.error(f"Failed to decompress: {e}")
+                return {"is_last": is_last}
+        
+        result = {"is_last": is_last}
+        if payload:
+            try:
+                result["data"] = json.loads(payload.decode('utf-8'))
+            except Exception as e:
+                logger.error(f"Failed to parse JSON: {e}")
+        
+        return result
+    
+    async def _send_initial_request(self):
+        """Send initial configuration request"""
+        request = self._build_full_request()
+        await self.connection.send_bytes(request)
+        self.seq += 1
+        logger.debug(f"Sent initial ASR request with seq={self.seq-1}")
+        
+        msg = await self.connection.receive()
+        if msg.type == aiohttp.WSMsgType.BINARY:
+            response = self._parse_response(msg.data)
+            logger.debug(f"Received initial response: {response}")
+    
+    async def transcribe_audio(self, audio_data: bytes) -> AsyncGenerator[str, None]:
+        """
+        Transcribe audio data and yield text results
+        
+        Args:
+            audio_data: PCM audio data bytes
+            
+        Yields:
+            str: Transcribed text from definite utterances
+        """
+        if not self.is_connected:
+            await self.connect()
+        
+        self.seq = 1
+        
+        try:
+            await self._send_initial_request()
+            
+            # Send audio in segments
+            offset = 0
+            while offset < len(audio_data):
+                chunk = audio_data[offset:offset + self.segment_size]
+                is_last = (offset + self.segment_size >= len(audio_data))
+                
+                request = self._build_audio_request(chunk, is_last=is_last)
+                await self.connection.send_bytes(request)
+                self.seq += 1
+                
+                offset += self.segment_size
+                
+                if not is_last:
+                    await asyncio.sleep(self.segment_duration_ms / 1000)
+            
+            outputted_utterances = set()
+            
+            # Receive transcriptions
+            async for msg in self.connection:
+                if msg.type == aiohttp.WSMsgType.BINARY:
+                    response = self._parse_response(msg.data)
+                    
+                    if 'data' in response and isinstance(response['data'], dict):
+                        result = response['data'].get('result', {})
+                        utterances = result.get('utterances', [])
+                        
+                        for utterance in utterances:
+                            if isinstance(utterance, dict):
+                                is_definite = utterance.get('definite', False)
+                                
+                                if is_definite:
+                                    text = utterance.get('text', '').strip()
+                                    start_time = utterance.get('start_time', -1)
+                                    end_time = utterance.get('end_time', -1)
+                                    
+                                    utterance_id = (start_time, end_time, text)
+                                    if text and utterance_id not in outputted_utterances:
+                                        outputted_utterances.add(utterance_id)
+                                        yield text
+                    
+                    if response.get('is_last'):
+                        break
+                
+                elif msg.type == aiohttp.WSMsgType.ERROR:
+                    logger.error(f"WebSocket error: {msg.data}")
+                    break
+                elif msg.type == aiohttp.WSMsgType.CLOSED:
+                    logger.info("WebSocket closed")
+                    break
+                    
+        except Exception as e:
+            logger.error(f"Error in ASR transcription: {e}")
+            raise
+    
+    async def stream_data(self):
+        """Implementation of abstract method"""
+        pass
+    
+    def stop_recording(self):
+        """Stop recording"""
+        self.is_recording = False
+        logger.info("Stopping ASR recording")

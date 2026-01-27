@@ -1,0 +1,52 @@
+# ChatAnon Backend Server Configuration
+# ======================================
+# Note: Sensitive credentials are stored in secrets.py (not in this file)
+
+# Server Configuration
+server:
+  host: "0.0.0.0"
+  port: 8765
+  debug: false
+
+# Service Endpoints
+endpoints:
+  asr: "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async"
+  tts: "wss://openspeech.bytedance.com/api/v3/tts/unidirectional/stream"
+  llm: "https://ark.cn-beijing.volces.com/api/v3"
+
+# Resource IDs
+resources:
+  asr_resource_id: "volc.bigasr.sauc.duration"
+  tts_resource_id: "seed-icl-2.0"
+
+# Model Configuration
+models:
+  llm_model: "doubao-seed-1-8-251228"
+  # Alternative models:
+  # llm_model: "doubao-seed-1-6-flash-250828"
+  # llm_model: "doubao-seed-1-6-lite-251015"
+  tts_model: "speech-2.8-hd"
+
+# Audio Parameters
+audio:
+  # ASR settings (microphone input)
+  asr_sample_rate: 16000
+  asr_segment_duration_ms: 200
+  
+  # TTS settings (speaker output)
+  tts_sample_rate: 16000
+  
+  # Common settings
+  channels: 1
+  bits: 16
+
+# LLM Parameters
+llm:
+  stream: false  # Set to true for streaming responses
+  reasoning_effort: "low"  # Options: low, medium, high
+
+# Logging
+logging:
+  level: "INFO"  # Options: DEBUG, INFO, WARNING, ERROR
+  file: "server.log"
+  console: true
