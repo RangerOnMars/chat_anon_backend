@@ -194,7 +194,7 @@ async def process_text_message(websocket: WebSocket, token: str, content: str):
         })
 
 
-async def handle_agent_mode(websocket: WebSocket, token: str, session: dict):
+async def handle_agent_mode(websocket: WebSocket, token: str, session: dict) -> bool:
     """
     Handle continuous agent mode conversation.
     
@@ -208,6 +208,9 @@ async def handle_agent_mode(websocket: WebSocket, token: str, session: dict):
         websocket: WebSocket connection
         token: API token for session lookup
         session: Active session with services
+        
+    Returns:
+        bool: True if main loop should exit (connection closed), False otherwise
     """
     asr_service = session["asr_service"]
     llm_service = session["llm_service"]
@@ -230,7 +233,7 @@ async def handle_agent_mode(websocket: WebSocket, token: str, session: dict):
         
         while True:
             try:
-                data = await asyncio.wait_for(websocket.receive_json(), timeout=0.05)
+                data = await asyncio.wait_for(websocket.receive_json(), timeout=0.01)
                 msg_type = data.get("type", "")
                 
                 if msg_type == "agent_mode_stop":
@@ -348,12 +351,16 @@ async def handle_agent_mode(websocket: WebSocket, token: str, session: dict):
                         
     except WebSocketDisconnect:
         logger.info(f"WebSocket disconnected during agent mode for token {token[:8]}...")
+        return True  # Signal main loop to exit
     except Exception as e:
         logger.error(f"Error in agent mode: {e}", exc_info=True)
-        await websocket.send_json({
-            "type": "error",
-            "message": f"Agent mode error: {e}"
-        })
+        try:
+            await websocket.send_json({
+                "type": "error",
+                "message": f"Agent mode error: {e}"
+            })
+        except:
+            return True  # Connection already closed
     finally:
         # Cleanup ASR
         try:
@@ -361,6 +368,8 @@ async def handle_agent_mode(websocket: WebSocket, token: str, session: dict):
         except:
             pass
         logger.info(f"Agent mode ended for token {token[:8]}...")
+    
+    return False  # Normal exit, can continue in main loop
 
 
 async def process_audio_message(websocket: WebSocket, token: str, audio_base64: str):
@@ -765,7 +774,10 @@ async def websocket_endpoint(websocket: WebSocket):
                         })
                         continue
                     
-                    await handle_agent_mode(websocket, token, session)
+                    should_exit = await handle_agent_mode(websocket, token, session)
+                    if should_exit:
+                        # Connection closed during agent mode, exit main loop
+                        break
                 
                 elif msg_type == "ping":
                     # Keepalive ping

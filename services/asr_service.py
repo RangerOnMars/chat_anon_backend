@@ -354,7 +354,7 @@ class ASRService(StreamingService):
             return None
         
         try:
-            msg = await asyncio.wait_for(self.connection.receive(), timeout=0.1)
+            msg = await asyncio.wait_for(self.connection.receive(), timeout=0.01)
             
             if msg.type == aiohttp.WSMsgType.BINARY:
                 response = self._parse_response(msg.data)
@@ -374,8 +374,13 @@ class ASRService(StreamingService):
                             is_definite = utterance.get('definite', False)
                             text = utterance.get('text', '').strip()
                             
+                            # Check for VAD trigger type (critical for detecting speech end)
+                            additions = utterance.get('additions', {})
+                            invoke_type = additions.get('invoke_type', '')
+                            
                             if text:
-                                if is_definite:
+                                # Only treat as final when BOTH definite AND hard_vad triggered
+                                if is_definite and invoke_type == 'hard_vad':
                                     start_time = utterance.get('start_time', -1)
                                     end_time = utterance.get('end_time', -1)
                                     utterance_id = (start_time, end_time, text)
@@ -384,8 +389,9 @@ class ASRService(StreamingService):
                                         self._outputted_utterances.add(utterance_id)
                                         texts.append(text)
                                         result["is_partial"] = False
+                                        logger.debug(f"VAD hard_vad triggered: {text}")
                                 else:
-                                    # Partial transcription (not definite)
+                                    # Partial transcription (not definite or not hard_vad)
                                     texts.append(text)
                     
                     if texts:
