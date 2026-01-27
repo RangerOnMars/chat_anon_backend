@@ -18,6 +18,6 @@ pyyaml>=6.0
 # Utilities
 python-multipart>=0.0.6
 
-# Optional: Audio processing (for client)
-# pyaudio>=0.2.14
-# numpy>=1.24.0
+# Audio processing (for client real-time playback and voice mode)
+pyaudio>=0.2.14
+numpy>=1.24.0
