@@ -20,19 +20,21 @@ chat_anon_backend/
 │   ├── config.py             # 配置加载
 │   ├── auth.py               # Token 认证
 │   ├── connection_manager.py # 连接管理
-│   └── character_manager.py  # 角色管理
+│   ├── character_manager.py  # 角色管理
+│   └── message_handlers.py   # 消息处理器
 ├── services/                  # 服务层
-│   ├── base.py               # 基础抽象类
-│   ├── llm_service.py        # LLM 服务
-│   ├── tts_service.py        # TTS 服务
-│   └── asr_service.py        # ASR 服务
+│   ├── base.py               # 基础抽象类和异常
+│   ├── llm_service.py        # LLM 服务 (Doubao)
+│   ├── tts_service.py        # TTS 服务 (MiniMax)
+│   └── asr_service.py        # ASR 服务 (ByteDance)
 ├── prompts/                   # 角色定义
 │   └── anon/
 │       └── character_manifest.md
 ├── client/                    # 测试客户端
-│   └── test_client.py
-├── secrets.py                 # 密钥配置 (不提交到 git)
-├── secrets.example.py         # 密钥模板
+│   ├── test_client.py        # CLI 测试客户端
+│   └── audio_manager.py      # 音频 I/O 管理
+├── credentials.py             # 密钥配置 (不提交到 git)
+├── credentials.example.py     # 密钥模板
 ├── config.yaml               # 服务配置
 ├── requirements.txt
 └── README.md
@@ -48,25 +50,27 @@ pip install -r requirements.txt
 
 ### 2. 配置密钥
 
+#### 方法 A: 环境变量（推荐用于生产环境）
+
+设置以下环境变量：
+
+```bash
+export BYTEDANCE_APP_KEY="your_app_key"
+export BYTEDANCE_ACCESS_KEY="your_access_key"
+export DOUBAO_API_KEY="your_llm_api_key"
+export MINIMAX_API_KEY="your_minimax_key"
+export VALID_API_TOKENS="token1,token2,token3"  # 逗号分隔
+```
+
+#### 方法 B: 配置文件（用于开发环境）
+
 复制密钥模板并填入实际凭据：
 
 ```bash
 cp credentials.example.py credentials.py
 ```
 
-编辑 `credentials.py` 填入你的 API 密钥：
-
-```python
-BYTEDANCE_APP_KEY = "your_app_key"
-BYTEDANCE_ACCESS_KEY = "your_access_key"
-DOUBAO_API_KEY = "your_llm_api_key"
-MINIMAX_API_KEY = "your_minimax_key"
-
-VALID_API_TOKENS = [
-    "your_token_1",
-    "your_token_2",
-]
-```
+编辑 `credentials.py` 填入你的 API 密钥。环境变量优先于文件配置。
 
 ### 3. 启动服务器
 
@@ -111,9 +115,10 @@ python client/test_client.py --token dev_token_001
 }
 ```
 
-### 消息类型
+### 客户端发送消息类型
 
-#### 发送消息
+#### `message` - 文本消息
+发送文本给角色进行对话。
 ```json
 {
   "type": "message",
@@ -121,20 +126,63 @@ python client/test_client.py --token dev_token_001
 }
 ```
 
-#### 响应
+#### `audio_message` - 批量音频消息
+发送完整音频进行识别和对话（非流式）。
 ```json
 {
-  "type": "response",
-  "content_cn": "哈喽～",
-  "content_jp": "ハロー～",
-  "emotion": "happy",
-  "audio_base64": "...",
-  "audio_format": "pcm",
-  "audio_sample_rate": 16000
+  "type": "audio_message",
+  "audio_base64": "<base64_encoded_pcm_audio>"
 }
 ```
 
-#### 切换角色
+#### `audio_stream_start` - 开始流式语音识别
+```json
+{
+  "type": "audio_stream_start"
+}
+```
+
+#### `audio_stream_chunk` - 发送音频块
+在流式识别期间发送音频块。
+```json
+{
+  "type": "audio_stream_chunk",
+  "audio_base64": "<base64_encoded_chunk>"
+}
+```
+
+#### `audio_stream_end` - 结束流式语音识别
+```json
+{
+  "type": "audio_stream_end"
+}
+```
+
+#### `agent_mode_start` - 开启连续对话模式
+开启免唤醒连续语音对话模式。
+```json
+{
+  "type": "agent_mode_start"
+}
+```
+
+#### `agent_mode_stop` - 退出连续对话模式
+```json
+{
+  "type": "agent_mode_stop"
+}
+```
+
+#### `agent_audio_chunk` - 连续模式音频块
+在 Agent 模式中发送音频块。
+```json
+{
+  "type": "agent_audio_chunk",
+  "audio_base64": "<base64_encoded_chunk>"
+}
+```
+
+#### `switch_character` - 切换角色
 ```json
 {
   "type": "switch_character",
@@ -142,19 +190,159 @@ python client/test_client.py --token dev_token_001
 }
 ```
 
-#### 清除历史
+#### `clear_history` - 清除对话历史
 ```json
 {
   "type": "clear_history"
 }
 ```
 
-### 错误响应
+#### `ping` - 心跳检测
+```json
+{
+  "type": "ping"
+}
+```
+
+### 服务器响应消息类型
+
+#### `connected` - 连接成功
+```json
+{
+  "type": "connected",
+  "character": "anon",
+  "character_display_name": "千早爱音 (Chihaya Anon)",
+  "message": "Connection established successfully"
+}
+```
+
+#### `thinking` - 处理中指示
+```json
+{
+  "type": "thinking",
+  "message": "Processing..."
+}
+```
+
+#### `transcription` - 语音识别结果
+```json
+{
+  "type": "transcription",
+  "text": "识别的文本",
+  "is_partial": true
+}
+```
+`is_partial` 为 `true` 表示是中间结果，`false` 表示最终结果。
+
+#### `audio_chunk` - 音频块（流式 TTS）
+```json
+{
+  "type": "audio_chunk",
+  "audio_base64": "<base64_encoded_pcm>",
+  "audio_format": "pcm",
+  "audio_sample_rate": 16000
+}
+```
+
+#### `audio_end` - 音频流结束
+```json
+{
+  "type": "audio_end"
+}
+```
+
+#### `response` - 文本响应
+```json
+{
+  "type": "response",
+  "content_cn": "哈喽～",
+  "content_jp": "ハロー～",
+  "emotion": "happy",
+  "audio_format": "pcm",
+  "audio_sample_rate": 16000
+}
+```
+
+#### `audio_stream_started` - 流式识别已开始
+```json
+{
+  "type": "audio_stream_started",
+  "message": "Streaming ASR session started"
+}
+```
+
+#### `agent_listening` - Agent 模式等待输入
+```json
+{
+  "type": "agent_listening",
+  "message": "Ready to listen"
+}
+```
+
+#### `character_switched` - 角色切换成功
+```json
+{
+  "type": "character_switched",
+  "character": "anon",
+  "character_display_name": "千早爱音 (Chihaya Anon)",
+  "message": "Switched to character: anon"
+}
+```
+
+#### `history_cleared` - 历史已清除
+```json
+{
+  "type": "history_cleared",
+  "message": "Conversation history cleared"
+}
+```
+
+#### `pong` - 心跳响应
+```json
+{
+  "type": "pong"
+}
+```
+
+#### `disconnected` - 连接断开通知
+```json
+{
+  "type": "disconnected",
+  "reason": "new_connection",
+  "message": "Another client connected with the same token"
+}
+```
+
+#### `error` - 错误响应
 ```json
 {
   "type": "error",
   "message": "Error description"
 }
+```
+
+### 交互模式
+
+#### 1. 文本对话模式
+```
+客户端: message -> 服务器: thinking -> audio_chunk* -> audio_end -> response
+```
+
+#### 2. 批量语音模式
+```
+客户端: audio_message -> 服务器: thinking -> transcription* -> audio_chunk* -> audio_end -> response
+```
+
+#### 3. 流式语音模式
+```
+客户端: audio_stream_start -> audio_stream_chunk* -> audio_stream_end
+服务器: audio_stream_started -> transcription* -> thinking -> audio_chunk* -> audio_end -> response
+```
+
+#### 4. Agent 连续对话模式
+```
+客户端: agent_mode_start -> agent_audio_chunk* -> agent_mode_stop
+服务器: agent_listening -> transcription* -> thinking -> audio_chunk* -> audio_end -> response -> agent_listening (循环)
 ```
 
 ## HTTP API
@@ -172,13 +360,31 @@ server:
   host: "0.0.0.0"
   port: 8765
 
+endpoints:
+  asr: "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async"
+  tts: "wss://api.minimaxi.com/ws/v1/t2a_v2"
+  llm: "https://ark.cn-beijing.volces.com/api/v3"
+
+ssl:
+  verify_tts: false  # MiniMax may require this
+
+timeouts:
+  websocket_connect: 30.0  # Initial connection timeout
+  websocket_receive: 0.01  # Non-blocking receive timeout
+
 models:
-  llm_model: "doubao-seed-1-8-251228"
+  llm_model: "doubao-seed-1-6-lite-251015"
   tts_model: "speech-2.8-hd"
+
+audio:
+  asr_sample_rate: 16000
+  tts_sample_rate: 16000
+  channels: 1
+  bits: 16
 
 llm:
   stream: false
-  reasoning_effort: "low"
+  reasoning_effort: "low"  # Options: low, medium, high
 ```
 
 ## 测试客户端命令

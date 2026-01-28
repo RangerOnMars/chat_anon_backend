@@ -11,7 +11,7 @@ import json
 import logging
 from typing import AsyncGenerator, Optional, List
 
-from services.base import StreamingService, ServiceConfig
+from services.base import StreamingService, ServiceConfig, ASRError
 
 logger = logging.getLogger(__name__)
 
@@ -296,10 +296,6 @@ class ASRService(StreamingService):
         except Exception as e:
             logger.error(f"Error in ASR transcription: {e}")
             raise
-    
-    async def stream_data(self):
-        """Implementation of abstract method"""
-        pass
     
     def stop_recording(self):
         """Stop recording"""

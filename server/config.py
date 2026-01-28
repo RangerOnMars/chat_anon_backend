@@ -98,7 +98,7 @@ def create_service_config(character_name: str = "anon") -> ServiceConfig:
             "asr", "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async"
         ),
         tts_endpoint=yaml_config.get("endpoints", {}).get(
-            "tts", "wss://openspeech.bytedance.com/api/v3/tts/unidirectional/stream"
+            "tts", "wss://api.minimaxi.com/ws/v1/t2a_v2"
         ),
         llm_endpoint=yaml_config.get("endpoints", {}).get(
             "llm", "https://ark.cn-beijing.volces.com/api/v3"
@@ -108,13 +108,10 @@ def create_service_config(character_name: str = "anon") -> ServiceConfig:
         asr_resource_id=yaml_config.get("resources", {}).get(
             "asr_resource_id", "volc.bigasr.sauc.duration"
         ),
-        tts_resource_id=yaml_config.get("resources", {}).get(
-            "tts_resource_id", "seed-icl-2.0"
-        ),
         
         # Models
         llm_model=yaml_config.get("models", {}).get(
-            "llm_model", "doubao-seed-1-8-251228"
+            "llm_model", "doubao-seed-1-6-lite-251015"
         ),
         tts_model=yaml_config.get("models", {}).get(
             "tts_model", "speech-2.8-hd"
@@ -129,6 +126,7 @@ def create_service_config(character_name: str = "anon") -> ServiceConfig:
         tts_sample_rate=yaml_config.get("audio", {}).get("tts_sample_rate", 16000),
         audio_channels=yaml_config.get("audio", {}).get("channels", 1),
         audio_bits=yaml_config.get("audio", {}).get("bits", 16),
+        audio_format=yaml_config.get("audio", {}).get("format", "pcm"),
         
         # Streaming parameters
         asr_segment_duration_ms=yaml_config.get("audio", {}).get("asr_segment_duration_ms", 200),
@@ -136,6 +134,13 @@ def create_service_config(character_name: str = "anon") -> ServiceConfig:
         # LLM parameters
         llm_stream=yaml_config.get("llm", {}).get("stream", False),
         llm_reasoning_effort=yaml_config.get("llm", {}).get("reasoning_effort", "low"),
+        
+        # SSL/Security settings
+        ssl_verify_tts=yaml_config.get("ssl", {}).get("verify_tts", False),
+        
+        # Timeout settings
+        websocket_connect_timeout=yaml_config.get("timeouts", {}).get("websocket_connect", 30.0),
+        websocket_receive_timeout=yaml_config.get("timeouts", {}).get("websocket_receive", 0.01),
     )
 
 
@@ -150,3 +155,17 @@ def get_server_config() -> ServerConfig:
         debug=server_section.get("debug", False),
         log_level=yaml_config.get("logging", {}).get("level", "INFO"),
     )
+
+
+def get_timeout_config() -> dict:
+    """
+    Get timeout configuration from yaml.
+    Returns a dict with timeout settings for use before session creation.
+    """
+    yaml_config = load_yaml_config()
+    timeouts = yaml_config.get("timeouts", {})
+    
+    return {
+        "websocket_connect": timeouts.get("websocket_connect", 30.0),
+        "websocket_receive": timeouts.get("websocket_receive", 0.01),
+    }

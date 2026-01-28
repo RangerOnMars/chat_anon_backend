@@ -11,8 +11,20 @@ server:
 # Service Endpoints
 endpoints:
   asr: "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async"
-  tts: "wss://openspeech.bytedance.com/api/v3/tts/unidirectional/stream"
+  # MiniMax TTS WebSocket endpoint (not ByteDance)
+  tts: "wss://api.minimaxi.com/ws/v1/t2a_v2"
   llm: "https://ark.cn-beijing.volces.com/api/v3"
+
+# SSL Configuration
+ssl:
+  # Set to true in production with valid certificates
+  # MiniMax may require this to be false due to certificate issues
+  verify_tts: false
+
+# Timeout Configuration (in seconds)
+timeouts:
+  websocket_connect: 30.0  # Timeout for initial WebSocket connection
+  websocket_receive: 0.01  # Timeout for non-blocking receive operations
 
 # Resource IDs
 resources:

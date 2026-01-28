@@ -9,7 +9,7 @@ import time
 from typing import List, Dict, Optional
 from openai import OpenAI
 
-from services.base import BaseService, ServiceConfig
+from services.base import BaseService, ServiceConfig, LLMError
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +114,9 @@ class LLMService(BaseService):
             
         Returns:
             Dict with 'content', 'elapsed_time', 'model' keys
+            
+        Raises:
+            LLMError: If the LLM request fails
         """
         if not self.is_connected:
             await self.connect()
@@ -180,19 +183,15 @@ class LLMService(BaseService):
             
         except Exception as e:
             elapsed_time = time.time() - start_time
-            logger.error(f"LLM request failed: {e}")
-            return {
-                "error": str(e),
-                "elapsed_time": elapsed_time
-            }
+            logger.error(f"LLM request failed after {elapsed_time:.3f}s: {e}")
+            raise LLMError(f"LLM request failed: {e}") from e
     
     async def generate(self, prompt: str) -> str:
         """
-        Simple generation method that returns only the response text
+        Simple generation method that returns only the response text.
+        
+        Raises:
+            LLMError: If the LLM request fails
         """
         result = await self.chat(prompt)
-        
-        if "error" in result:
-            raise RuntimeError(f"LLM generation failed: {result['error']}")
-        
         return result["content"]

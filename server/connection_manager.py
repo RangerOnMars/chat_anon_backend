@@ -91,6 +91,38 @@ class ConnectionManager:
             logger.info(f"Connection established: token={token[:8]}..., character={character_name}")
             return True
     
+    def register_accepted_connection(
+        self,
+        websocket: WebSocket,
+        token: str,
+        character_name: str = "anon"
+    ) -> ConnectionInfo:
+        """
+        Register an already-accepted WebSocket connection.
+        
+        Use this method when the WebSocket has already been accepted
+        (e.g., to receive initial authentication message).
+        
+        Args:
+            websocket: The already-accepted WebSocket connection
+            token: The API token
+            character_name: The character to use
+            
+        Returns:
+            ConnectionInfo for the registered connection
+        """
+        conn_info = ConnectionInfo(
+            websocket=websocket,
+            token=token,
+            character_name=character_name
+        )
+        
+        self._connections[token] = conn_info
+        self._websocket_to_token[websocket] = token
+        
+        logger.info(f"Connection registered: token={token[:8]}..., character={character_name}")
+        return conn_info
+    
     async def disconnect(self, websocket: WebSocket) -> Optional[str]:
         """
         Remove a connection from the manager.

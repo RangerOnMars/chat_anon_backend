@@ -10,6 +10,31 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 
+class ServiceError(Exception):
+    """Base exception for all service errors"""
+    pass
+
+
+class LLMError(ServiceError):
+    """Exception raised by LLM service"""
+    pass
+
+
+class TTSError(ServiceError):
+    """Exception raised by TTS service"""
+    pass
+
+
+class ASRError(ServiceError):
+    """Exception raised by ASR service"""
+    pass
+
+
+class ConnectionError(ServiceError):
+    """Exception raised when a service connection fails"""
+    pass
+
+
 @dataclass
 class ServiceConfig:
     """Configuration for backend services"""
@@ -21,15 +46,14 @@ class ServiceConfig:
     
     # Service endpoints
     asr_endpoint: str = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async"
-    tts_endpoint: str = "wss://openspeech.bytedance.com/api/v3/tts/unidirectional/stream"
+    tts_endpoint: str = "wss://api.minimaxi.com/ws/v1/t2a_v2"  # MiniMax TTS
     llm_endpoint: str = "https://ark.cn-beijing.volces.com/api/v3"
     
     # Resource IDs
     asr_resource_id: str = "volc.bigasr.sauc.duration"
-    tts_resource_id: str = "seed-icl-2.0"
     
     # Models
-    llm_model: str = "doubao-seed-1-8-251228"
+    llm_model: str = "doubao-seed-1-6-lite-251015"  # Unified default
     tts_model: str = "speech-2.8-hd"
     
     # Character configuration
@@ -41,6 +65,7 @@ class ServiceConfig:
     tts_sample_rate: int = 16000
     audio_channels: int = 1
     audio_bits: int = 16
+    audio_format: str = "pcm"  # Audio format for responses
     
     # Streaming parameters
     asr_segment_duration_ms: int = 200
@@ -48,6 +73,13 @@ class ServiceConfig:
     # LLM parameters
     llm_stream: bool = False
     llm_reasoning_effort: str = "low"
+    
+    # SSL/Security settings
+    ssl_verify_tts: bool = False  # MiniMax may require disabled SSL verification
+    
+    # Timeout settings (in seconds)
+    websocket_connect_timeout: float = 30.0
+    websocket_receive_timeout: float = 0.01  # For non-blocking receives
     
     def __post_init__(self):
         """Validate configuration"""
@@ -89,13 +121,13 @@ class BaseService(ABC):
 
 
 class StreamingService(BaseService):
-    """Base class for streaming services (ASR, TTS)"""
+    """
+    Base class for streaming services (ASR, TTS) that maintain WebSocket connections.
+    
+    These services stream data bi-directionally over persistent connections,
+    unlike LLMService which uses request/response over HTTP.
+    """
     
     def __init__(self, config: ServiceConfig):
         super().__init__(config)
-        self.connection = None
-    
-    @abstractmethod
-    async def stream_data(self):
-        """Stream data to/from service"""
-        pass
+        self.connection = None  # WebSocket connection

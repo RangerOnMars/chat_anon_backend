@@ -11,7 +11,7 @@ import time
 import websockets
 from typing import Optional, AsyncGenerator, Callable
 
-from services.base import StreamingService, ServiceConfig
+from services.base import StreamingService, ServiceConfig, TTSError
 
 logger = logging.getLogger(__name__)
 
@@ -41,12 +41,18 @@ class TTSService(StreamingService):
                 pass
             self._connected = False
         
-        url = "wss://api.minimaxi.com/ws/v1/t2a_v2"
+        # Use configured endpoint instead of hardcoded URL
+        url = self.config.tts_endpoint
         headers = {"Authorization": f"Bearer {self.api_key}"}
         
+        # Configure SSL based on settings
         ssl_context = ssl.create_default_context()
-        ssl_context.check_hostname = False
-        ssl_context.verify_mode = ssl.CERT_NONE
+        if not self.config.ssl_verify_tts:
+            # Disable SSL verification (required for some services)
+            # WARNING: This is less secure, only use when necessary
+            ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_NONE
+            logger.debug("TTS SSL verification disabled (ssl_verify_tts=false)")
         
         try:
             self.connection = await websockets.connect(
@@ -106,10 +112,10 @@ class TTSService(StreamingService):
             "model": self.model,
             "voice_setting": voice_setting,
             "audio_setting": {
-                "sample_rate": 16000,
+                "sample_rate": self.config.tts_sample_rate,
                 "bitrate": 128000,
-                "format": "pcm",
-                "channel": 1
+                "format": self.config.audio_format,
+                "channel": self.config.audio_channels
             },
             "pronunciation_dict": {
                 "tone": ["あのん/Anon"],
@@ -198,7 +204,7 @@ class TTSService(StreamingService):
         except Exception as e:
             logger.error(f"TTS synthesis failed: {e}")
             await self.disconnect()
-            raise
+            raise TTSError(f"TTS synthesis failed: {e}") from e
     
     async def synthesize_stream(self, text: str, emotion: Optional[str] = None) -> AsyncGenerator[bytes, None]:
         """
@@ -210,12 +216,15 @@ class TTSService(StreamingService):
             
         Yields:
             bytes: Audio chunks (PCM format)
+            
+        Raises:
+            TTSError: If synthesis fails
         """
         await self.connect(force_reconnect=True)
         
         try:
             if not await self._start_tts_task(emotion=emotion):
-                raise Exception("Failed to start TTS task")
+                raise TTSError("Failed to start TTS task")
             
             await self.connection.send(json.dumps({
                 "event": "task_continue",
@@ -238,11 +247,10 @@ class TTSService(StreamingService):
             
             await self.disconnect()
                     
+        except TTSError:
+            await self.disconnect()
+            raise
         except Exception as e:
             logger.error(f"TTS streaming failed: {e}")
             await self.disconnect()
-            raise
-    
-    async def stream_data(self):
-        """Implementation of abstract method"""
-        pass
+            raise TTSError(f"TTS streaming failed: {e}") from e

@@ -3,8 +3,6 @@ ChatAnon Backend Server - Main FastAPI Application
 WebSocket-based role-playing server with token authentication
 """
 import asyncio
-import base64
-import json
 import logging
 import sys
 import os
@@ -18,10 +16,11 @@ from contextlib import asynccontextmanager
 from typing import Dict, Optional
 
 from server.auth import validate_token
-from server.connection_manager import connection_manager, ConnectionInfo
-from server.character_manager import character_manager, CharacterManager
-from server.config import create_service_config, get_server_config
-from services import LLMService, TTSService, ServiceConfig
+from server.connection_manager import connection_manager
+from server.character_manager import character_manager
+from server.config import create_service_config, get_server_config, get_timeout_config
+from server.message_handlers import MessageRouter, send_error
+from services import LLMService, TTSService
 from services.asr_service import ASRService
 
 # Configure logging
@@ -116,341 +115,8 @@ class SessionManager:
 # Global session manager
 session_manager = SessionManager()
 
-
-async def process_text_message(websocket: WebSocket, token: str, content: str):
-    """
-    Process a text message: LLM -> TTS (streaming)
-    
-    Args:
-        websocket: WebSocket connection
-        token: API token for session lookup
-        content: Text message content
-    """
-    # Get session
-    session = await session_manager.get_session(token)
-    if not session:
-        await websocket.send_json({
-            "type": "error",
-            "message": "Session not found"
-        })
-        return
-    
-    llm_service = session["llm_service"]
-    tts_service = session["tts_service"]
-    
-    # Send thinking indicator
-    await websocket.send_json({
-        "type": "thinking",
-        "message": "Processing..."
-    })
-    
-    # Get LLM response
-    response = await llm_service.chat(content)
-    
-    if "error" in response:
-        await websocket.send_json({
-            "type": "error",
-            "message": f"LLM error: {response['error']}"
-        })
-        return
-    
-    # Parse response
-    raw_content = response["content"]
-    cn_texts, jp_texts, emotion_labels = CharacterManager.parse_llm_response(raw_content)
-    
-    # Process each response with streaming TTS
-    for cn_text, jp_text, emotion in zip(cn_texts, jp_texts, emotion_labels):
-        # Convert names for TTS
-        tts_text = CharacterManager.convert_names_for_tts(jp_text)
-        
-        # Stream TTS audio chunks in real-time
-        try:
-            async for audio_chunk in tts_service.synthesize_stream(tts_text, emotion=emotion):
-                # Send each audio chunk immediately for real-time playback
-                chunk_base64 = base64.b64encode(audio_chunk).decode('utf-8')
-                await websocket.send_json({
-                    "type": "audio_chunk",
-                    "audio_base64": chunk_base64,
-                    "audio_format": "pcm",
-                    "audio_sample_rate": 16000
-                })
-            
-            # Signal end of audio stream
-            await websocket.send_json({
-                "type": "audio_end"
-            })
-            
-        except Exception as e:
-            logger.error(f"TTS error: {e}")
-        
-        # Send final response with text only (audio already streamed)
-        await websocket.send_json({
-            "type": "response",
-            "content_cn": cn_text,
-            "content_jp": jp_text,
-            "emotion": emotion,
-            "audio_format": "pcm",
-            "audio_sample_rate": 16000
-        })
-
-
-async def handle_agent_mode(websocket: WebSocket, token: str, session: dict) -> bool:
-    """
-    Handle continuous agent mode conversation.
-    
-    This mode enables hands-free voice interaction:
-    - Client continuously streams audio chunks
-    - Server-side VAD detects when user finishes speaking
-    - Automatically processes through LLM + TTS
-    - Signals when ready for next turn
-    
-    Args:
-        websocket: WebSocket connection
-        token: API token for session lookup
-        session: Active session with services
-        
-    Returns:
-        bool: True if main loop should exit (connection closed), False otherwise
-    """
-    asr_service = session["asr_service"]
-    llm_service = session["llm_service"]
-    tts_service = session["tts_service"]
-    
-    logger.info(f"Agent mode started for token {token[:8]}...")
-    
-    try:
-        # Start ASR streaming session
-        await asr_service.start_streaming_session()
-        
-        # Signal client we're ready to listen
-        await websocket.send_json({
-            "type": "agent_listening",
-            "message": "Ready to listen"
-        })
-        
-        accumulated_text = ""
-        is_processing = False
-        
-        while True:
-            try:
-                data = await asyncio.wait_for(websocket.receive_json(), timeout=0.01)
-                msg_type = data.get("type", "")
-                
-                if msg_type == "agent_mode_stop":
-                    logger.info(f"Agent mode stopped by client for token {token[:8]}...")
-                    break
-                
-                elif msg_type == "agent_audio_chunk" and not is_processing:
-                    # Receive and process audio chunk
-                    audio_base64 = data.get("audio_base64", "")
-                    if not audio_base64:
-                        continue
-                    
-                    try:
-                        audio_chunk = base64.b64decode(audio_base64)
-                        
-                        # Send chunk to ASR
-                        await asr_service.send_audio_chunk(audio_chunk, is_last=False)
-                        
-                    except Exception as e:
-                        logger.error(f"Error processing audio chunk: {e}")
-                
-                elif msg_type == "ping":
-                    await websocket.send_json({"type": "pong"})
-                    
-            except asyncio.TimeoutError:
-                # No message received, check for ASR transcription
-                pass
-            
-            # Check for transcription results (non-blocking)
-            if not is_processing:
-                result = await asr_service.receive_transcription()
-                
-                if result and result.get("text"):
-                    text = result["text"]
-                    is_partial = result.get("is_partial", True)
-                    
-                    # Send transcription to client
-                    await websocket.send_json({
-                        "type": "transcription",
-                        "text": text,
-                        "is_partial": is_partial
-                    })
-                    
-                    # If this is a final (VAD-triggered) transcription, process it
-                    if not is_partial:
-                        is_processing = True
-                        accumulated_text = text
-                        logger.info(f"VAD detected speech end: {text}")
-                        
-                        # Process through LLM and TTS
-                        await websocket.send_json({
-                            "type": "thinking",
-                            "message": "Processing..."
-                        })
-                        
-                        # Get LLM response
-                        response = await llm_service.chat(accumulated_text)
-                        
-                        if "error" in response:
-                            await websocket.send_json({
-                                "type": "error",
-                                "message": f"LLM error: {response['error']}"
-                            })
-                        else:
-                            # Parse response
-                            raw_content = response["content"]
-                            cn_texts, jp_texts, emotion_labels = CharacterManager.parse_llm_response(raw_content)
-                            
-                            # Process each response with streaming TTS
-                            for cn_text, jp_text, emotion in zip(cn_texts, jp_texts, emotion_labels):
-                                # Convert names for TTS
-                                tts_text = CharacterManager.convert_names_for_tts(jp_text)
-                                
-                                # Stream TTS audio chunks
-                                try:
-                                    async for audio_chunk in tts_service.synthesize_stream(tts_text, emotion=emotion):
-                                        chunk_base64 = base64.b64encode(audio_chunk).decode('utf-8')
-                                        await websocket.send_json({
-                                            "type": "audio_chunk",
-                                            "audio_base64": chunk_base64,
-                                            "audio_format": "pcm",
-                                            "audio_sample_rate": 16000
-                                        })
-                                    
-                                    # Signal end of audio stream
-                                    await websocket.send_json({
-                                        "type": "audio_end"
-                                    })
-                                    
-                                except Exception as e:
-                                    logger.error(f"TTS error: {e}")
-                                
-                                # Send response text
-                                await websocket.send_json({
-                                    "type": "response",
-                                    "content_cn": cn_text,
-                                    "content_jp": jp_text,
-                                    "emotion": emotion
-                                })
-                        
-                        # Reset for next turn
-                        accumulated_text = ""
-                        is_processing = False
-                        
-                        # Restart ASR session for next turn
-                        await asr_service.reset_for_next_turn()
-                        
-                        # Signal ready for next turn
-                        await websocket.send_json({
-                            "type": "agent_listening",
-                            "message": "Ready to listen"
-                        })
-                        
-                        connection_manager.increment_message_count(websocket)
-                        
-    except WebSocketDisconnect:
-        logger.info(f"WebSocket disconnected during agent mode for token {token[:8]}...")
-        return True  # Signal main loop to exit
-    except Exception as e:
-        logger.error(f"Error in agent mode: {e}", exc_info=True)
-        try:
-            await websocket.send_json({
-                "type": "error",
-                "message": f"Agent mode error: {e}"
-            })
-        except:
-            return True  # Connection already closed
-    finally:
-        # Cleanup ASR
-        try:
-            await asr_service.disconnect()
-        except:
-            pass
-        logger.info(f"Agent mode ended for token {token[:8]}...")
-    
-    return False  # Normal exit, can continue in main loop
-
-
-async def process_audio_message(websocket: WebSocket, token: str, audio_base64: str):
-    """
-    Process an audio message: ASR -> LLM -> TTS (streaming)
-    
-    Args:
-        websocket: WebSocket connection
-        token: API token for session lookup
-        audio_base64: Base64 encoded audio data
-    """
-    # Get session
-    session = await session_manager.get_session(token)
-    if not session:
-        await websocket.send_json({
-            "type": "error",
-            "message": "Session not found"
-        })
-        return
-    
-    asr_service = session["asr_service"]
-    llm_service = session["llm_service"]
-    tts_service = session["tts_service"]
-    
-    # Decode audio
-    try:
-        audio_data = base64.b64decode(audio_base64)
-    except Exception as e:
-        await websocket.send_json({
-            "type": "error",
-            "message": f"Invalid audio data: {e}"
-        })
-        return
-    
-    # Send thinking indicator
-    await websocket.send_json({
-        "type": "thinking",
-        "message": "Transcribing..."
-    })
-    
-    # Transcribe audio with ASR
-    transcribed_texts = []
-    try:
-        async for text in asr_service.transcribe_audio(audio_data):
-            transcribed_texts.append(text)
-            # Send transcription progress
-            await websocket.send_json({
-                "type": "transcription",
-                "text": text,
-                "is_partial": True
-            })
-    except Exception as e:
-        logger.error(f"ASR error: {e}")
-        await websocket.send_json({
-            "type": "error",
-            "message": f"ASR error: {e}"
-        })
-        return
-    finally:
-        # Disconnect ASR after use
-        await asr_service.disconnect()
-    
-    if not transcribed_texts:
-        await websocket.send_json({
-            "type": "error",
-            "message": "No speech detected in audio"
-        })
-        return
-    
-    # Combine transcriptions
-    full_transcription = " ".join(transcribed_texts)
-    
-    # Send final transcription
-    await websocket.send_json({
-        "type": "transcription",
-        "text": full_transcription,
-        "is_partial": False
-    })
-    
-    # Process transcribed text through LLM and TTS
-    await process_text_message(websocket, token, full_transcription)
+# Global message router - initialized with session_manager for handlers that need it
+message_router = MessageRouter(session_manager)
 
 
 @asynccontextmanager
@@ -522,12 +188,18 @@ async def websocket_endpoint(websocket: WebSocket):
     token = None
     
     try:
+        # Get timeout configuration
+        timeout_config = get_timeout_config()
+        
         # Wait for initial connection message
         # First, we need to accept to receive the first message
         await websocket.accept()
         
-        # Receive connect message
-        connect_data = await asyncio.wait_for(websocket.receive_json(), timeout=30.0)
+        # Receive connect message with configured timeout
+        connect_data = await asyncio.wait_for(
+            websocket.receive_json(),
+            timeout=timeout_config["websocket_connect"]
+        )
         
         if connect_data.get("type") != "connect":
             await websocket.send_json({
@@ -564,16 +236,12 @@ async def websocket_endpoint(websocket: WebSocket):
             await session_manager.close_session(token)
             await connection_manager.disconnect_by_token(token, "reconnect")
         
-        # Register connection (re-accept is handled internally)
-        # Note: we already accepted above, so we need to handle this differently
-        # Store connection info manually
-        conn_info = ConnectionInfo(
+        # Register the already-accepted connection using proper encapsulation
+        connection_manager.register_accepted_connection(
             websocket=websocket,
             token=token,
             character_name=character_name
         )
-        connection_manager._connections[token] = conn_info
-        connection_manager._websocket_to_token[websocket] = token
         
         # Create session with services
         session = await session_manager.create_session(token, character_name)
@@ -589,209 +257,44 @@ async def websocket_endpoint(websocket: WebSocket):
         
         logger.info(f"Client connected: token={token[:8]}..., character={character_name}")
         
-        # Main message loop
-        while True:
+        # Main message loop - uses MessageRouter for clean dispatch
+        connection_active = True
+        while connection_active:
             try:
                 data = await websocket.receive_json()
-                msg_type = data.get("type", "")
                 
-                if msg_type == "message":
-                    # Process text chat message
-                    content = data.get("content", "").strip()
-                    if not content:
-                        await websocket.send_json({
-                            "type": "error",
-                            "message": "Empty message content"
-                        })
-                        continue
-                    
-                    await process_text_message(websocket, token, content)
-                    connection_manager.increment_message_count(websocket)
+                # Get current session for handler
+                session = await session_manager.get_session(token)
+                if not session:
+                    await send_error(websocket, "Session not found")
+                    connection_active = False
+                    continue
                 
-                elif msg_type == "audio_message":
-                    # Process voice input (ASR -> LLM -> TTS) - batch mode
-                    audio_base64 = data.get("audio_base64", "")
-                    if not audio_base64:
-                        await websocket.send_json({
-                            "type": "error",
-                            "message": "No audio data provided"
-                        })
-                        continue
-                    
-                    await process_audio_message(websocket, token, audio_base64)
-                    connection_manager.increment_message_count(websocket)
+                # Route message to appropriate handler
+                result = await message_router.route(websocket, token, session, data)
                 
-                elif msg_type == "audio_stream_start":
-                    # Start streaming ASR session
-                    session = await session_manager.get_session(token)
-                    if not session:
-                        await websocket.send_json({
-                            "type": "error",
-                            "message": "Session not found"
-                        })
-                        continue
+                # Handler returns True to signal exit (e.g., agent mode disconnect)
+                if result is True:
+                    connection_active = False
                     
-                    try:
-                        asr_service = session["asr_service"]
-                        await asr_service.start_streaming_session()
-                        await websocket.send_json({
-                            "type": "audio_stream_started",
-                            "message": "Streaming ASR session started"
-                        })
-                        logger.info(f"ASR streaming started for token {token[:8]}...")
-                    except Exception as e:
-                        logger.error(f"Failed to start ASR streaming: {e}")
-                        await websocket.send_json({
-                            "type": "error",
-                            "message": f"Failed to start ASR: {e}"
-                        })
-                
-                elif msg_type == "audio_stream_chunk":
-                    # Receive audio chunk and forward to ASR
-                    session = await session_manager.get_session(token)
-                    if not session:
-                        continue
-                    
-                    audio_base64 = data.get("audio_base64", "")
-                    if not audio_base64:
-                        continue
-                    
-                    try:
-                        audio_chunk = base64.b64decode(audio_base64)
-                        asr_service = session["asr_service"]
-                        
-                        # Send chunk to ASR
-                        await asr_service.send_audio_chunk(audio_chunk, is_last=False)
-                        
-                        # Try to receive any available transcriptions
-                        result = await asr_service.receive_transcription()
-                        if result and result.get("text"):
-                            await websocket.send_json({
-                                "type": "transcription",
-                                "text": result["text"],
-                                "is_partial": result.get("is_partial", True)
-                            })
-                    except Exception as e:
-                        logger.error(f"Error processing audio chunk: {e}")
-                
-                elif msg_type == "audio_stream_end":
-                    # Finish streaming ASR and process through LLM + TTS
-                    session = await session_manager.get_session(token)
-                    if not session:
-                        await websocket.send_json({
-                            "type": "error",
-                            "message": "Session not found"
-                        })
-                        continue
-                    
-                    try:
-                        asr_service = session["asr_service"]
-                        
-                        # Send final empty chunk to signal end
-                        await asr_service.send_audio_chunk(b"", is_last=True)
-                        
-                        # Collect final transcriptions
-                        final_texts = await asr_service.finish_streaming_session()
-                        
-                        # Disconnect ASR
-                        await asr_service.disconnect()
-                        
-                        if not final_texts:
-                            await websocket.send_json({
-                                "type": "error",
-                                "message": "No speech detected"
-                            })
-                            continue
-                        
-                        # Combine transcriptions
-                        full_transcription = " ".join(final_texts)
-                        
-                        # Send final transcription
-                        await websocket.send_json({
-                            "type": "transcription",
-                            "text": full_transcription,
-                            "is_partial": False
-                        })
-                        
-                        logger.info(f"ASR transcription: {full_transcription}")
-                        
-                        # Process through LLM and TTS
-                        await process_text_message(websocket, token, full_transcription)
-                        connection_manager.increment_message_count(websocket)
-                        
-                    except Exception as e:
-                        logger.error(f"Error finishing ASR stream: {e}")
-                        await websocket.send_json({
-                            "type": "error",
-                            "message": f"ASR error: {e}"
-                        })
-                
-                elif msg_type == "switch_character":
-                    # Switch character
-                    new_character = data.get("character_name", "").lower()
-                    
-                    if not character_manager.is_character_available(new_character):
-                        await websocket.send_json({
-                            "type": "error",
-                            "message": f"Character '{new_character}' not available"
-                        })
-                        continue
-                    
-                    # Switch character in session
-                    if await session_manager.switch_character(token, new_character):
-                        await connection_manager.update_character(websocket, new_character)
-                        char_config = character_manager.get_character_config(new_character)
-                        
-                        await websocket.send_json({
-                            "type": "character_switched",
-                            "character": new_character,
-                            "character_display_name": char_config.display_name if char_config else new_character,
-                            "message": f"Switched to character: {new_character}"
-                        })
-                    else:
-                        await websocket.send_json({
-                            "type": "error",
-                            "message": "Failed to switch character"
-                        })
-                
-                elif msg_type == "clear_history":
-                    # Clear conversation history
-                    session = await session_manager.get_session(token)
-                    if session:
-                        session["llm_service"].clear_history()
-                        await websocket.send_json({
-                            "type": "history_cleared",
-                            "message": "Conversation history cleared"
-                        })
-                
-                elif msg_type == "agent_mode_start":
-                    # Enter continuous agent mode
-                    session = await session_manager.get_session(token)
-                    if not session:
-                        await websocket.send_json({
-                            "type": "error",
-                            "message": "Session not found"
-                        })
-                        continue
-                    
-                    should_exit = await handle_agent_mode(websocket, token, session)
-                    if should_exit:
-                        # Connection closed during agent mode, exit main loop
-                        break
-                
-                elif msg_type == "ping":
-                    # Keepalive ping
-                    await websocket.send_json({"type": "pong"})
-                
-                else:
-                    await websocket.send_json({
-                        "type": "error",
-                        "message": f"Unknown message type: {msg_type}"
-                    })
-                    
+            except WebSocketDisconnect:
+                # WebSocket disconnected during message processing
+                logger.info(f"WebSocket disconnected in message loop: token={token[:8]}...")
+                connection_active = False
             except asyncio.TimeoutError:
                 # Send ping to check connection
-                await websocket.send_json({"type": "ping"})
+                try:
+                    await websocket.send_json({"type": "ping"})
+                except Exception:
+                    # Failed to send ping, connection is dead
+                    connection_active = False
+            except RuntimeError as e:
+                # Handle "WebSocket is not connected" and similar runtime errors
+                if "not connected" in str(e).lower() or "disconnect" in str(e).lower():
+                    logger.info(f"WebSocket connection lost: token={token[:8]}...")
+                    connection_active = False
+                else:
+                    raise
                 
     except WebSocketDisconnect:
         logger.info(f"WebSocket disconnected: token={token[:8] if token else 'unknown'}...")

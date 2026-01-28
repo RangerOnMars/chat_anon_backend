@@ -33,6 +33,9 @@ class AudioConfig:
     format: int = 8  # pyaudio.paInt16 = 8
     bits_per_sample: int = 16
     chunk_size: Optional[int] = None
+    # Buffer limits
+    max_buffer_seconds: float = 300.0  # Max 5 minutes of audio in buffer
+    max_queue_size: int = 1000  # Max items in playback queue
     
     def __post_init__(self):
         if self.chunk_size is None:
@@ -40,6 +43,13 @@ class AudioConfig:
             self.chunk_size = self.sample_rate // 50
         if PYAUDIO_AVAILABLE:
             self.format = pyaudio.paInt16
+    
+    @property
+    def max_buffer_bytes(self) -> int:
+        """Calculate max buffer size in bytes based on max_buffer_seconds"""
+        bytes_per_sample = self.bits_per_sample // 8
+        bytes_per_second = self.sample_rate * self.channels * bytes_per_sample
+        return int(bytes_per_second * self.max_buffer_seconds)
 
 
 class AudioManager:
@@ -177,10 +187,12 @@ class AudioPlayer:
         self.audio_manager = audio_manager
         self.config = config or AudioConfig()
         
-        self.audio_queue: queue.Queue = queue.Queue()
+        # Use bounded queue to prevent memory issues
+        self.audio_queue: queue.Queue = queue.Queue(maxsize=self.config.max_queue_size)
         self.is_playing = False
         self.play_thread: Optional[threading.Thread] = None
         self._stop_signal = False
+        self._done_event = threading.Event()  # Reusable event for wait_until_done
     
     def start(self):
         """Start the audio player"""
@@ -212,10 +224,24 @@ class AudioPlayer:
                 logger.error(f"Error playing audio: {e}")
     
     def play(self, audio_bytes: bytes):
-        """Queue audio data for playback"""
+        """
+        Queue audio data for playback.
+        
+        If the queue is full, drops the oldest audio to make room.
+        """
         if not self.is_playing:
             self.start()
-        self.audio_queue.put(audio_bytes)
+        
+        try:
+            self.audio_queue.put_nowait(audio_bytes)
+        except queue.Full:
+            # Queue is full, drop oldest to make room
+            logger.warning("Audio queue full, dropping oldest chunk")
+            try:
+                self.audio_queue.get_nowait()
+                self.audio_queue.put_nowait(audio_bytes)
+            except queue.Empty:
+                pass
     
     def stop(self, wait: bool = True):
         """Stop the audio player"""
@@ -223,7 +249,12 @@ class AudioPlayer:
             return
         
         self._stop_signal = True
-        self.audio_queue.put(None)  # Send end signal
+        try:
+            self.audio_queue.put_nowait(None)  # Send end signal
+        except queue.Full:
+            # Clear queue and add end signal
+            self.clear_queue()
+            self.audio_queue.put_nowait(None)
         
         if wait and self.play_thread:
             self.play_thread.join(timeout=2.0)
@@ -241,16 +272,31 @@ class AudioPlayer:
             except queue.Empty:
                 break
     
-    def wait_until_done(self):
-        """Wait until all queued audio has been played"""
+    def wait_until_done(self, timeout: float = None):
+        """
+        Wait until all queued audio has been played.
+        
+        Args:
+            timeout: Maximum time to wait in seconds. None for no limit.
+        """
+        import time
+        start_time = time.time()
+        
         while not self.audio_queue.empty():
-            threading.Event().wait(0.1)
+            if timeout and (time.time() - start_time) > timeout:
+                logger.warning("wait_until_done timed out")
+                break
+            self._done_event.wait(0.1)
+            self._done_event.clear()
 
 
 class AudioRecorder:
     """
     Audio recorder for capturing microphone input.
     Can stream audio chunks or record to buffer.
+    
+    Buffer size is limited by config.max_buffer_bytes to prevent memory issues
+    during long recordings.
     """
     
     def __init__(self, audio_manager: AudioManager, config: Optional[AudioConfig] = None):
@@ -260,6 +306,7 @@ class AudioRecorder:
         self.is_recording = False
         self._stop_signal = False
         self.audio_buffer: bytearray = bytearray()
+        self._buffer_overflow_warned = False
     
     def start_recording(self):
         """Start recording from microphone"""
@@ -271,7 +318,8 @@ class AudioRecorder:
         self.is_recording = True
         self._stop_signal = False
         self.audio_buffer = bytearray()
-        logger.info("AudioRecorder started")
+        self._buffer_overflow_warned = False
+        logger.info(f"AudioRecorder started (max buffer: {self.config.max_buffer_bytes / 1024 / 1024:.1f}MB)")
     
     def stop_recording(self) -> bytes:
         """Stop recording and return captured audio"""
@@ -281,11 +329,15 @@ class AudioRecorder:
         self._stop_signal = True
         self.is_recording = False
         self.audio_manager.close_input_stream()
-        logger.info("AudioRecorder stopped")
+        logger.info(f"AudioRecorder stopped (buffer size: {len(self.audio_buffer) / 1024:.1f}KB)")
         return bytes(self.audio_buffer)
     
     def read_chunk(self) -> Optional[bytes]:
-        """Read a single chunk of audio data"""
+        """
+        Read a single chunk of audio data.
+        
+        If buffer is at max capacity, oldest data is discarded to make room.
+        """
         if not self.is_recording:
             return None
         
@@ -294,6 +346,22 @@ class AudioRecorder:
                 self.config.chunk_size,
                 exception_on_overflow=False
             )
+            
+            # Check buffer size limit
+            new_size = len(self.audio_buffer) + len(chunk)
+            if new_size > self.config.max_buffer_bytes:
+                # Discard oldest data to make room
+                bytes_to_remove = new_size - self.config.max_buffer_bytes
+                self.audio_buffer = self.audio_buffer[bytes_to_remove:]
+                
+                if not self._buffer_overflow_warned:
+                    logger.warning(
+                        f"Audio buffer limit reached ({self.config.max_buffer_seconds}s / "
+                        f"{self.config.max_buffer_bytes / 1024 / 1024:.1f}MB), "
+                        "discarding oldest audio"
+                    )
+                    self._buffer_overflow_warned = True
+            
             self.audio_buffer.extend(chunk)
             return chunk
         except Exception as e:
@@ -307,3 +375,11 @@ class AudioRecorder:
     def clear_buffer(self):
         """Clear the audio buffer"""
         self.audio_buffer = bytearray()
+        self._buffer_overflow_warned = False
+    
+    @property
+    def buffer_duration_seconds(self) -> float:
+        """Get the current buffer duration in seconds"""
+        bytes_per_sample = self.config.bits_per_sample // 8
+        bytes_per_second = self.config.sample_rate * self.config.channels * bytes_per_sample
+        return len(self.audio_buffer) / bytes_per_second if bytes_per_second > 0 else 0.0
