@@ -185,6 +185,21 @@ class ChatAnonClient:
                     print(f"  [{response.get('message', 'Thinking...')}]", end="\r")
                     continue
                 
+                # Pipeline status events
+                elif msg_type == "llm_start":
+                    print("  [LLM Processing...]", end="\r")
+                    continue
+                
+                elif msg_type == "llm_end":
+                    elapsed = response.get("elapsed_time", 0)
+                    print(f"  [LLM Done: {elapsed:.2f}s]    ", end="\r")
+                    continue
+                
+                elif msg_type == "tts_start":
+                    emotion = response.get("emotion", "auto")
+                    print(f"  [TTS Synthesizing... ({emotion})]", end="\r")
+                    continue
+                
                 elif msg_type == "audio_chunk":
                     # Streaming audio chunk - play immediately
                     if play_audio and response.get("audio_base64"):
@@ -512,6 +527,24 @@ async def agent_mode_session(client: ChatAnonClient):
                     elif msg_type == "thinking":
                         print(f"  [{response.get('message', 'Processing...')}]")
                     
+                    # Pipeline status events
+                    elif msg_type == "asr_start":
+                        print("  [ASR Starting...]")
+                    
+                    elif msg_type == "asr_end":
+                        print(f"  [ASR Done]")
+                    
+                    elif msg_type == "llm_start":
+                        print("  [LLM Processing...]")
+                    
+                    elif msg_type == "llm_end":
+                        elapsed = response.get("elapsed_time", 0)
+                        print(f"  [LLM Done: {elapsed:.2f}s]")
+                    
+                    elif msg_type == "tts_start":
+                        emotion = response.get("emotion", "auto")
+                        print(f"  [TTS Synthesizing... ({emotion})]")
+                    
                     elif msg_type == "audio_chunk":
                         # Play streaming audio
                         if response.get("audio_base64"):
@@ -715,6 +748,24 @@ async def voice_mode_session(client: ChatAnonClient):
                 
                 elif msg_type == "thinking":
                     print(f"  [{response.get('message', 'Thinking...')}]", end="\r")
+                
+                # Pipeline status events
+                elif msg_type == "asr_start":
+                    print("  [ASR Starting...]", end="\r")
+                
+                elif msg_type == "asr_end":
+                    print("  [ASR Done]        ", end="\r")
+                
+                elif msg_type == "llm_start":
+                    print("  [LLM Processing...]", end="\r")
+                
+                elif msg_type == "llm_end":
+                    elapsed = response.get("elapsed_time", 0)
+                    print(f"  [LLM Done: {elapsed:.2f}s]    ", end="\r")
+                
+                elif msg_type == "tts_start":
+                    emotion = response.get("emotion", "auto")
+                    print(f"  [TTS Synthesizing... ({emotion})]", end="\r")
                 
                 elif msg_type == "audio_chunk":
                     # Play streaming audio

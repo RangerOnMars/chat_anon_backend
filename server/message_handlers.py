@@ -64,6 +64,20 @@ async def send_thinking(websocket: WebSocket, message: str = "Processing..."):
     await websocket.send_json({"type": "thinking", "message": message})
 
 
+async def send_status_event(websocket: WebSocket, event_type: str, **kwargs):
+    """
+    Send a status event to the client for pipeline stage tracking.
+    
+    Event types:
+        - asr_start: ASR recognition started
+        - asr_end: ASR recognition completed
+        - llm_start: LLM inference started
+        - llm_end: LLM inference completed
+        - tts_start: TTS synthesis started for a segment
+    """
+    await websocket.send_json({"type": event_type, **kwargs})
+
+
 async def process_llm_and_stream_tts(
     ctx: MessageContext,
     user_input: str
@@ -91,6 +105,9 @@ async def process_llm_and_stream_tts(
     # Send thinking indicator
     await send_thinking(ctx.websocket)
     
+    # Signal LLM processing start
+    await send_status_event(ctx.websocket, "llm_start")
+    
     # Get LLM response
     try:
         response = await llm_service.chat(user_input)
@@ -98,6 +115,13 @@ async def process_llm_and_stream_tts(
         logger.error(f"LLM error: {e}")
         await send_error(ctx.websocket, f"LLM error: {e}")
         return False
+    
+    # Signal LLM processing end
+    await send_status_event(
+        ctx.websocket, 
+        "llm_end", 
+        elapsed_time=response.get("elapsed_time", 0)
+    )
     
     # Parse response
     raw_content = response["content"]
@@ -107,6 +131,14 @@ async def process_llm_and_stream_tts(
     for cn_text, jp_text, emotion in zip(cn_texts, jp_texts, emotion_labels):
         # Convert names for TTS
         tts_text = CharacterManager.convert_names_for_tts(jp_text)
+        
+        # Signal TTS processing start for this segment
+        await send_status_event(
+            ctx.websocket, 
+            "tts_start", 
+            text=tts_text[:50] + "..." if len(tts_text) > 50 else tts_text,
+            emotion=emotion
+        )
         
         # Stream TTS audio chunks in real-time
         try:
@@ -119,7 +151,7 @@ async def process_llm_and_stream_tts(
                     "audio_sample_rate": config.tts_sample_rate
                 })
             
-            # Signal end of audio stream
+            # Signal end of audio stream (also serves as tts_end for this segment)
             await ctx.websocket.send_json({"type": "audio_end"})
             
         except TTSError as e:
@@ -179,6 +211,9 @@ async def handle_audio_message(ctx: MessageContext) -> Optional[bool]:
         await send_error(ctx.websocket, f"Invalid audio data: {e}")
         return None
     
+    # Signal ASR processing start
+    await send_status_event(ctx.websocket, "asr_start")
+    
     # Send thinking indicator
     await send_thinking(ctx.websocket, "Transcribing...")
     
@@ -209,6 +244,10 @@ async def handle_audio_message(ctx: MessageContext) -> Optional[bool]:
     
     # Combine transcriptions and send final
     full_transcription = " ".join(transcribed_texts)
+    
+    # Signal ASR processing end
+    await send_status_event(ctx.websocket, "asr_end", text=full_transcription)
+    
     await ctx.websocket.send_json({
         "type": "transcription",
         "text": full_transcription,
@@ -226,6 +265,10 @@ async def handle_audio_stream_start(ctx: MessageContext) -> Optional[bool]:
     try:
         asr_service = ctx.asr_service
         await asr_service.start_streaming_session()
+        
+        # Signal ASR processing start
+        await send_status_event(ctx.websocket, "asr_start")
+        
         await ctx.websocket.send_json({
             "type": "audio_stream_started",
             "message": "Streaming ASR session started"
@@ -283,6 +326,9 @@ async def handle_audio_stream_end(ctx: MessageContext) -> Optional[bool]:
         
         # Combine transcriptions
         full_transcription = " ".join(final_texts)
+        
+        # Signal ASR processing end
+        await send_status_event(ctx.websocket, "asr_end", text=full_transcription)
         
         # Send final transcription
         await ctx.websocket.send_json({
@@ -368,6 +414,9 @@ async def handle_agent_mode(ctx: MessageContext) -> bool:
         # Start ASR streaming session
         await asr_service.start_streaming_session()
         
+        # Signal ASR processing start
+        await send_status_event(ctx.websocket, "asr_start")
+        
         # Signal client we're ready to listen
         await ctx.websocket.send_json({
             "type": "agent_listening",
@@ -427,7 +476,10 @@ async def handle_agent_mode(ctx: MessageContext) -> bool:
                         accumulated_text = text
                         logger.info(f"VAD detected speech end: {text}")
                         
-                        # Process through LLM and TTS
+                        # Signal ASR processing end
+                        await send_status_event(ctx.websocket, "asr_end", text=accumulated_text)
+                        
+                        # Process through LLM and TTS (includes llm_start/llm_end/tts_start events)
                         await process_llm_and_stream_tts(ctx, accumulated_text)
                         
                         # Reset for next turn
@@ -436,6 +488,9 @@ async def handle_agent_mode(ctx: MessageContext) -> bool:
                         
                         # Restart ASR session for next turn
                         await asr_service.reset_for_next_turn()
+                        
+                        # Signal ASR processing start for new turn
+                        await send_status_event(ctx.websocket, "asr_start")
                         
                         # Signal ready for next turn
                         await ctx.websocket.send_json({
