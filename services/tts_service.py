@@ -222,6 +222,10 @@ class TTSService(StreamingService):
         """
         await self.connect(force_reconnect=True)
         
+        send_time = time.time()
+        first_audio_received = False
+        chunk_count = 0
+        
         try:
             if not await self._start_tts_task(emotion=emotion):
                 raise TTSError("Failed to start TTS task")
@@ -238,11 +242,18 @@ class TTSService(StreamingService):
                 if "data" in response and "audio" in response["data"]:
                     audio_hex = response["data"]["audio"]
                     if audio_hex:
+                        if not first_audio_received:
+                            first_audio_time = time.time()
+                            latency_ms = (first_audio_time - send_time) * 1000
+                            logger.info(f"TTS streaming first chunk latency: {latency_ms:.2f} ms")
+                            first_audio_received = True
+                        
                         audio_bytes = bytes.fromhex(audio_hex)
+                        chunk_count += 1
                         yield audio_bytes
                 
                 if response.get("is_final"):
-                    logger.info("TTS streaming completed")
+                    logger.info(f"TTS streaming completed with {chunk_count} chunks")
                     break
             
             await self.disconnect()

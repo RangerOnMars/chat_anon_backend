@@ -33,10 +33,10 @@ resources:
 
 # Model Configuration
 models:
-  # llm_model: "doubao-seed-1-8-251228"
+  llm_model: "doubao-seed-1-8-251228"
   # Alternative models:
   # llm_model: "doubao-seed-1-6-flash-250828"
-  llm_model: "doubao-seed-1-6-lite-251015"
+  # llm_model: "doubao-seed-1-6-lite-251015"
   tts_model: "speech-2.8-hd"
 
 # Audio Parameters
@@ -55,7 +55,8 @@ audio:
 # LLM Parameters
 llm:
   stream: false  # Set to true for streaming responses
-  reasoning_effort: "low"  # Options: low, medium, high
+  # reasoning_effort: "low"  # Options: low, medium, high
+  reasoning_effort: "minimal"
 
 # Logging
 logging:
