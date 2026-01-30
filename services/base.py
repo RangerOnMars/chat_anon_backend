@@ -69,6 +69,7 @@ class ServiceConfig:
     
     # Streaming parameters
     asr_segment_duration_ms: int = 200
+    tts_sentence_gap_seconds: float = 0.5  # Silence between sentences in multi-sentence TTS
     
     # LLM parameters
     llm_stream: bool = False

@@ -78,37 +78,44 @@ async def send_status_event(websocket: WebSocket, event_type: str, **kwargs):
     await websocket.send_json({"type": event_type, **kwargs})
 
 
+def _make_silence_bytes(sample_rate: int, gap_seconds: float) -> bytes:
+    """Generate PCM 16-bit mono silence. Length = sample_rate * 2 * gap_seconds bytes."""
+    n_bytes = int(sample_rate * 2 * gap_seconds)
+    return b"\x00" * n_bytes
+
+
+async def _producer_tts_to_queue(
+    tts_service,
+    tts_text: str,
+    emotion: Optional[str],
+    queue: asyncio.Queue,
+):
+    """Run TTS dedicated stream and put chunks into queue; put None when done."""
+    try:
+        async for chunk in tts_service.synthesize_stream_dedicated(tts_text, emotion=emotion):
+            await queue.put(chunk)
+    except Exception as e:
+        logger.error(f"TTS producer error: {e}")
+    finally:
+        await queue.put(None)
+
+
 async def process_llm_and_stream_tts(
     ctx: MessageContext,
     user_input: str
 ) -> bool:
     """
     Common logic for processing user input through LLM and streaming TTS response.
-    
-    This is the core conversation flow used by multiple handlers:
-    1. Send thinking indicator
-    2. Get LLM response
-    3. Parse response into segments
-    4. For each segment, stream TTS audio and send text response
-    
-    Args:
-        ctx: Message context with services and websocket
-        user_input: The user's input text
-        
-    Returns:
-        True if successful, False if error occurred
+    Multi-sentence: TTS all sentences in parallel; stream to client in order;
+    send response for each sentence when that sentence starts playing; end with turn_end.
     """
     llm_service = ctx.llm_service
     tts_service = ctx.tts_service
     config = ctx.config
     
-    # Send thinking indicator
     await send_thinking(ctx.websocket)
-    
-    # Signal LLM processing start
     await send_status_event(ctx.websocket, "llm_start")
     
-    # Get LLM response
     try:
         response = await llm_service.chat(user_input)
     except LLMError as e:
@@ -116,59 +123,93 @@ async def process_llm_and_stream_tts(
         await send_error(ctx.websocket, f"LLM error: {e}")
         return False
     
-    # Signal LLM processing end
     await send_status_event(
-        ctx.websocket, 
-        "llm_end", 
-        elapsed_time=response.get("elapsed_time", 0)
+        ctx.websocket,
+        "llm_end",
+        elapsed_time=response.get("elapsed_time", 0),
     )
     
-    # Parse response
     raw_content = response["content"]
     cn_texts, jp_texts, emotion_labels = CharacterManager.parse_llm_response(raw_content)
+    n = len(cn_texts)
+    gap_seconds = getattr(config, "tts_sentence_gap_seconds", 0.5)
+    silence_bytes = _make_silence_bytes(config.tts_sample_rate, gap_seconds)
     
-    # Process each response segment with streaming TTS
-    for cn_text, jp_text, emotion in zip(cn_texts, jp_texts, emotion_labels):
-        # Convert names for TTS
-        tts_text = CharacterManager.convert_names_for_tts(jp_text)
-        
-        # Signal TTS processing start for this segment
-        await send_status_event(
-            ctx.websocket, 
-            "tts_start", 
-            text=tts_text[:50] + "..." if len(tts_text) > 50 else tts_text,
-            emotion=emotion
+    if n == 0:
+        return True
+    
+    # One queue per segment; producers run in parallel
+    queues = [asyncio.Queue() for _ in range(n)]
+    tts_texts = [CharacterManager.convert_names_for_tts(jp) for jp in jp_texts]
+    producers = [
+        asyncio.create_task(
+            _producer_tts_to_queue(tts_service, tts_texts[i], emotion_labels[i], queues[i])
         )
-        
-        # Stream TTS audio chunks in real-time
-        try:
-            async for audio_chunk in tts_service.synthesize_stream(tts_text, emotion=emotion):
-                chunk_base64 = base64.b64encode(audio_chunk).decode('utf-8')
+        for i in range(n)
+    ]
+    
+    try:
+        for i in range(n):
+            # Wait for first chunk of this sentence (or None if failed)
+            first = await queues[i].get()
+            await send_status_event(
+                ctx.websocket,
+                "tts_start",
+                text=tts_texts[i][:50] + "..." if len(tts_texts[i]) > 50 else tts_texts[i],
+                emotion=emotion_labels[i],
+            )
+            # Send response for this sentence when it starts playing
+            await ctx.websocket.send_json({
+                "type": "response",
+                "content_cn": cn_texts[i],
+                "content_jp": jp_texts[i],
+                "emotion": emotion_labels[i],
+                "audio_format": config.audio_format,
+                "audio_sample_rate": config.tts_sample_rate,
+            })
+            if first is not None:
+                chunk_base64 = base64.b64encode(first).decode("utf-8")
                 await ctx.websocket.send_json({
                     "type": "audio_chunk",
                     "audio_base64": chunk_base64,
                     "audio_format": config.audio_format,
-                    "audio_sample_rate": config.tts_sample_rate
+                    "audio_sample_rate": config.tts_sample_rate,
                 })
-            
-            # Signal end of audio stream (also serves as tts_end for this segment)
-            await ctx.websocket.send_json({"type": "audio_end"})
-            
-        except TTSError as e:
-            logger.error(f"TTS error: {e}")
-            # Continue to send text response even if TTS fails
-        except Exception as e:
-            logger.error(f"Unexpected TTS error: {e}")
-        
-        # Send final response with text
-        await ctx.websocket.send_json({
-            "type": "response",
-            "content_cn": cn_text,
-            "content_jp": jp_text,
-            "emotion": emotion,
-            "audio_format": config.audio_format,
-            "audio_sample_rate": config.tts_sample_rate
-        })
+            while True:
+                chunk = await queues[i].get()
+                if chunk is None:
+                    break
+                chunk_base64 = base64.b64encode(chunk).decode("utf-8")
+                await ctx.websocket.send_json({
+                    "type": "audio_chunk",
+                    "audio_base64": chunk_base64,
+                    "audio_format": config.audio_format,
+                    "audio_sample_rate": config.tts_sample_rate,
+                })
+            # Inter-sentence silence (except after last)
+            if i < n - 1 and silence_bytes:
+                chunk_size = 1024
+                for off in range(0, len(silence_bytes), chunk_size):
+                    part = silence_bytes[off : off + chunk_size]
+                    chunk_base64 = base64.b64encode(part).decode("utf-8")
+                    await ctx.websocket.send_json({
+                        "type": "audio_chunk",
+                        "audio_base64": chunk_base64,
+                        "audio_format": config.audio_format,
+                        "audio_sample_rate": config.tts_sample_rate,
+                    })
+        await ctx.websocket.send_json({"type": "audio_end"})
+        await ctx.websocket.send_json({"type": "turn_end"})
+    except Exception as e:
+        logger.error(f"Error in process_llm_and_stream_tts: {e}")
+        raise
+    finally:
+        for t in producers:
+            t.cancel()
+            try:
+                await t
+            except asyncio.CancelledError:
+                pass
     
     return True
 

@@ -86,14 +86,42 @@ class TTSService(StreamingService):
         self._connected = False
         logger.info("TTS service disconnected")
     
-    async def _start_tts_task(self, emotion: Optional[str] = None):
+    async def _create_dedicated_connection(self) -> websockets.WebSocketClientProtocol:
+        """Create a new WebSocket connection without touching self.connection. Used for parallel multi-sentence TTS."""
+        url = self.config.tts_endpoint
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+        ssl_context = ssl.create_default_context()
+        if not self.config.ssl_verify_tts:
+            ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_NONE
+        conn = await websockets.connect(
+            url,
+            additional_headers=headers,
+            ssl=ssl_context,
+            max_size=10 * 1024 * 1024
+        )
+        connected = json.loads(await conn.recv())
+        if connected.get("event") != "connected_success":
+            await conn.close()
+            raise Exception(f"Connection failed: {connected}")
+        return conn
+    
+    async def _start_tts_task(
+        self,
+        emotion: Optional[str] = None,
+        connection: Optional[websockets.WebSocketClientProtocol] = None
+    ) -> bool:
         """
-        Start TTS task with MiniMax
+        Start TTS task with MiniMax.
         
         Args:
             emotion: Optional emotion label for voice synthesis.
                      Valid values: happy, sad, angry, fearful, disgusted, surprised, calm, fluent, whisper
+            connection: If provided, use this connection; otherwise use self.connection.
         """
+        conn = connection if connection is not None else self.connection
+        if conn is None:
+            raise ValueError("No connection available")
         voice_setting = {
             "voice_id": self.voice_id,
             "speed": 0.95,
@@ -123,8 +151,8 @@ class TTSService(StreamingService):
             "language_boost": "Japanese",
         }
         
-        await self.connection.send(json.dumps(start_msg))
-        response = json.loads(await self.connection.recv())
+        await conn.send(json.dumps(start_msg))
+        response = json.loads(await conn.recv())
         
         if response.get("event") == "task_started":
             logger.info("TTS task started")
@@ -205,6 +233,51 @@ class TTSService(StreamingService):
             logger.error(f"TTS synthesis failed: {e}")
             await self.disconnect()
             raise TTSError(f"TTS synthesis failed: {e}") from e
+    
+    async def synthesize_stream_dedicated(
+        self, text: str, emotion: Optional[str] = None
+    ) -> AsyncGenerator[bytes, None]:
+        """
+        Synthesize text using a dedicated WebSocket connection (does not use self.connection).
+        Use this for parallel multi-sentence TTS; multiple calls can run concurrently.
+        
+        Yields:
+            bytes: Audio chunks (PCM format)
+        """
+        conn = None
+        send_time = time.time()
+        chunk_count = 0
+        try:
+            conn = await self._create_dedicated_connection()
+            if not await self._start_tts_task(emotion=emotion, connection=conn):
+                raise TTSError("Failed to start TTS task")
+            await conn.send(json.dumps({"event": "task_continue", "text": text}))
+            logger.info(f"TTS dedicated stream request sent: {text[:50]}...")
+            while True:
+                msg = json.loads(await conn.recv())
+                if "data" in msg and "audio" in msg["data"]:
+                    audio_hex = msg["data"]["audio"]
+                    if audio_hex:
+                        if chunk_count == 0:
+                            latency_ms = (time.time() - send_time) * 1000
+                            logger.debug(f"TTS dedicated first chunk latency: {latency_ms:.2f} ms")
+                        chunk_count += 1
+                        yield bytes.fromhex(audio_hex)
+                if msg.get("is_final"):
+                    logger.debug(f"TTS dedicated stream completed with {chunk_count} chunks")
+                    break
+        except TTSError:
+            raise
+        except Exception as e:
+            logger.error(f"TTS dedicated stream failed: {e}")
+            raise TTSError(f"TTS dedicated stream failed: {e}") from e
+        finally:
+            if conn:
+                try:
+                    await conn.send(json.dumps({"event": "task_finish"}))
+                    await conn.close()
+                except Exception as e:
+                    logger.warning(f"Error closing dedicated TTS connection: {e}")
     
     async def synthesize_stream(self, text: str, emotion: Optional[str] = None) -> AsyncGenerator[bytes, None]:
         """

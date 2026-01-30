@@ -130,6 +130,7 @@ def create_service_config(character_name: str = "anon") -> ServiceConfig:
         
         # Streaming parameters
         asr_segment_duration_ms=yaml_config.get("audio", {}).get("asr_segment_duration_ms", 200),
+        tts_sentence_gap_seconds=yaml_config.get("audio", {}).get("tts_sentence_gap_seconds", 0.5),
         
         # LLM parameters
         llm_stream=yaml_config.get("llm", {}).get("stream", False),

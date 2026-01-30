@@ -212,8 +212,10 @@ class ChatAnonClient:
                 
                 elif msg_type == "response":
                     responses.append(response)
-                    # DON'T play audio here - already played via streaming audio_chunk
-                    # Audio in response is only for saving to file if needed
+                    continue
+                
+                elif msg_type == "turn_end":
+                    # Multi-sentence turn complete; return all collected responses
                     return {"responses": responses}
                 
                 elif msg_type == "error":
@@ -561,8 +563,8 @@ async def agent_mode_session(client: ChatAnonClient):
                         print(f"\n[{client.current_character.title()}] {cn_text}")
                         print(f"  (JP: {jp_text})")
                         print(f"  [emotion: {emotion}]")
-                        
-                        # Wait for audio to finish playing
+                    
+                    elif msg_type == "turn_end":
                         if client.audio_player:
                             client.audio_player.wait_until_done()
                     
@@ -773,7 +775,6 @@ async def voice_mode_session(client: ChatAnonClient):
                         client.play_audio(response["audio_base64"])
                 
                 elif msg_type == "audio_end":
-                    # Audio streaming complete
                     continue
                 
                 elif msg_type == "response":
@@ -781,6 +782,9 @@ async def voice_mode_session(client: ChatAnonClient):
                     jp_text = response.get("content_jp", "")
                     print(f"\n{client.current_character.title()}: {cn_text}")
                     print(f"  (JP: {jp_text})")
+                    continue
+                
+                elif msg_type == "turn_end":
                     break
                 
                 elif msg_type == "error":

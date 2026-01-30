@@ -47,6 +47,8 @@ audio:
   
   # TTS settings (speaker output)
   tts_sample_rate: 16000
+  # Silence (seconds) between sentences in multi-sentence TTS, default 0.5
+  tts_sentence_gap_seconds: 0.5
   
   # Common settings
   channels: 1
