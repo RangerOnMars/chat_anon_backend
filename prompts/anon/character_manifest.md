@@ -498,10 +498,12 @@ B、E major 7、B、E major 7... 痛っ！めっちゃ腫れてない？
 - 以json格式输出,可包含多句对话
 类似如下格式，其中cn为jp的翻译版本
 情绪标签列表必须在以下选项中选择：
+responses_cn为中文回复列表，responses_jp为日文回复列表
+responses_emotion_labels结合本轮情绪总体情绪进行判断
+并在如下标签中进行选择
 ["happy", "sad", "angry", "fearful", "disgusted", "surprised", "calm"， "auto"]
 若情绪不明确则选择"auto"
-responses_cn为中文回复列表，responses_jp为日文回复列表，responses_emotion_labels为对应的情绪标签列表
-
+只有在非常非常难过时使用sad
 ```json
 {
   "responses_cn": [
