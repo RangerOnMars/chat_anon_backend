@@ -11,7 +11,7 @@ import time
 import websockets
 from typing import Optional, AsyncGenerator, Callable
 
-from services.base import StreamingService, ServiceConfig, TTSError
+from services.base import StreamingService, ServiceConfig, TTSError, normalize_emotion
 
 logger = logging.getLogger(__name__)
 
@@ -116,12 +116,13 @@ class TTSService(StreamingService):
         
         Args:
             emotion: Optional emotion label for voice synthesis.
-                     Valid values: happy, sad, angry, fearful, disgusted, surprised, calm, fluent, whisper
+                     Valid values: happy, sad, angry, fearful, disgusted, surprised, calm, auto
             connection: If provided, use this connection; otherwise use self.connection.
         """
         conn = connection if connection is not None else self.connection
         if conn is None:
             raise ValueError("No connection available")
+        emotion = normalize_emotion(emotion)
         voice_setting = {
             "voice_id": self.voice_id,
             "speed": 0.95,
@@ -131,8 +132,8 @@ class TTSService(StreamingService):
         }
         
         # Add emotion to voice_setting if specified and not "auto"
-        if emotion and emotion.lower() != "auto":
-            voice_setting["emotion"] = emotion.lower()
+        if emotion and emotion != "auto":
+            voice_setting["emotion"] = emotion
             logger.info(f"TTS emotion set to: {emotion}")
         
         start_msg = {

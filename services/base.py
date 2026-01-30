@@ -9,6 +9,29 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+# Valid TTS emotion labels (MiniMax). Invalid values are normalized to "auto".
+VALID_EMOTIONS = frozenset({
+    "happy", "sad", "angry", "fearful", "disgusted", "surprised", "calm", "auto"
+})
+
+
+def normalize_emotion(emotion: Optional[str]) -> str:
+    """
+    Validate emotion label; if not in VALID_EMOTIONS, return "auto" and log warning.
+    Returns lowercase emotion string.
+    """
+    if not emotion or not isinstance(emotion, str):
+        return "auto"
+    lower = emotion.strip().lower()
+    if lower in VALID_EMOTIONS:
+        return lower
+    logger.warning(
+        "Emotion %r is not in valid set %s; using 'auto'",
+        emotion,
+        sorted(VALID_EMOTIONS),
+    )
+    return "auto"
+
 
 class ServiceError(Exception):
     """Base exception for all service errors"""

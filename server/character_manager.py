@@ -9,6 +9,8 @@ import re
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
 
+from services.base import normalize_emotion
+
 logger = logging.getLogger(__name__)
 
 # Base directory for prompts
@@ -253,7 +255,9 @@ class CharacterManager:
             max_len = max(len(cn_texts), len(jp_texts))
             while len(emotion_labels) < max_len:
                 emotion_labels.append("auto")
-            
+            # Validate and normalize each emotion; invalid values become "auto" with warning
+            emotion_labels = [normalize_emotion(e) for e in emotion_labels]
+
             if not cn_texts and not jp_texts:
                 logger.warning("Empty responses from LLM JSON parsing")
                 return [raw_content], [raw_content], ["auto"]
