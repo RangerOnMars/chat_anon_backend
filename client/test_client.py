@@ -432,9 +432,9 @@ async def interactive_session(client: ChatAnonClient, save_audio: bool = False,
             print(f"\n[Error] {e}\n")
 
 
-async def agent_mode_session(client: ChatAnonClient):
+async def voice_call_session(client: ChatAnonClient):
     """
-    Run a continuous voice conversation session - no button presses required.
+    Run a continuous voice call session - no button presses required.
     
     This mode uses server-side VAD (Voice Activity Detection) to automatically
     detect when you finish speaking and process the response.
@@ -451,16 +451,16 @@ async def agent_mode_session(client: ChatAnonClient):
         return
     
     print("\n" + "="*60)
-    print("ChatAnon Agent Mode (Continuous Voice)")
+    print("ChatAnon Voice Call (Continuous Voice)")
     print("="*60)
     print("Speak naturally - no button presses needed!")
     print("The system will automatically detect when you finish speaking.")
     print("Press Ctrl+C to exit.")
     print("="*60 + "\n")
     
-    # Start agent mode on server
+    # Start voice call on server
     await client.websocket.send(json.dumps({
-        "type": "agent_mode_start"
+        "type": "voice_call_start"
     }))
     
     # State management
@@ -479,7 +479,7 @@ async def agent_mode_session(client: ChatAnonClient):
                     chunk = client.audio_recorder.read_chunk()
                     if chunk:
                         await client.websocket.send(json.dumps({
-                            "type": "agent_audio_chunk",
+                            "type": "voice_call_audio_chunk",
                             "audio_base64": base64.b64encode(chunk).decode('utf-8')
                         }))
                 await asyncio.sleep(0.02)  # 20ms chunks
@@ -508,7 +508,7 @@ async def agent_mode_session(client: ChatAnonClient):
                     response = json.loads(raw_response)
                     msg_type = response.get("type", "")
                     
-                    if msg_type == "agent_listening":
+                    if msg_type == "voice_call_listening":
                         is_listening = True
                         print("\n[Listening...] Speak now")
                         partial_text = ""
@@ -591,7 +591,7 @@ async def agent_mode_session(client: ChatAnonClient):
         # Wait for Ctrl+C
         await asyncio.gather(sender_task, receiver_task)
     except KeyboardInterrupt:
-        print("\n\nExiting agent mode...")
+        print("\n\nExiting voice call...")
     finally:
         # Signal stop
         stop_event.set()
@@ -610,10 +610,10 @@ async def agent_mode_session(client: ChatAnonClient):
         except asyncio.CancelledError:
             pass
         
-        # Stop agent mode on server
+        # Stop voice call on server
         try:
             await client.websocket.send(json.dumps({
-                "type": "agent_mode_stop"
+                "type": "voice_call_stop"
             }))
         except:
             pass
@@ -624,7 +624,7 @@ async def agent_mode_session(client: ChatAnonClient):
         if client.audio_player:
             client.audio_player.stop()
         
-        print("[Agent mode ended]")
+        print("[Voice call ended]")
 
 
 async def voice_mode_session(client: ChatAnonClient):
@@ -825,9 +825,9 @@ async def main():
     )
     parser.add_argument(
         "--mode", "-m",
-        choices=["text", "voice", "agent"],
+        choices=["text", "voice", "voice_call"],
         default="text",
-        help="Interaction mode: text, voice, or agent (default: text). Agent mode is hands-free continuous voice."
+        help="Interaction mode: text, voice, or voice_call (default: text). voice_call is hands-free continuous voice."
     )
     parser.add_argument(
         "--save-audio",
@@ -852,7 +852,7 @@ async def main():
     logging.basicConfig(level=log_level, format='%(name)s - %(levelname)s - %(message)s')
     
     # Check audio availability
-    if args.mode in ["voice", "agent"] and not PYAUDIO_AVAILABLE:
+    if args.mode in ["voice", "voice_call"] and not PYAUDIO_AVAILABLE:
         print(f"[Error] {args.mode.title()} mode requires pyaudio. Install with: pip install pyaudio")
         return 1
     
@@ -870,8 +870,8 @@ async def main():
         return 1
     
     try:
-        if args.mode == "agent":
-            await agent_mode_session(client)
+        if args.mode == "voice_call":
+            await voice_call_session(client)
         elif args.mode == "voice":
             await voice_mode_session(client)
         else:

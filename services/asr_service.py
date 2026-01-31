@@ -441,7 +441,7 @@ class ASRService(StreamingService):
         """
         Reset ASR session for next conversation turn.
         Disconnects current session and prepares for new streaming.
-        Used in agent mode for multi-turn conversations.
+        Used in voice call mode for multi-turn conversations.
         """
         # Close current connection
         if self.connection:

@@ -433,9 +433,9 @@ async def handle_ping(ctx: MessageContext) -> Optional[bool]:
     return None
 
 
-async def handle_agent_mode(ctx: MessageContext) -> bool:
+async def handle_voice_call(ctx: MessageContext) -> bool:
     """
-    Handle continuous agent mode conversation.
+    Handle continuous voice call (phone-like) conversation.
     
     This mode enables hands-free voice interaction:
     - Client continuously streams audio chunks
@@ -449,7 +449,7 @@ async def handle_agent_mode(ctx: MessageContext) -> bool:
     asr_service = ctx.asr_service
     config = ctx.config
     
-    logger.info(f"Agent mode started for token {ctx.token[:8]}...")
+    logger.info(f"Voice call started for token {ctx.token[:8]}...")
     
     try:
         # Start ASR streaming session
@@ -460,7 +460,7 @@ async def handle_agent_mode(ctx: MessageContext) -> bool:
         
         # Signal client we're ready to listen
         await ctx.websocket.send_json({
-            "type": "agent_listening",
+            "type": "voice_call_listening",
             "message": "Ready to listen"
         })
         
@@ -475,11 +475,11 @@ async def handle_agent_mode(ctx: MessageContext) -> bool:
                 )
                 msg_type = data.get("type", "")
                 
-                if msg_type == "agent_mode_stop":
-                    logger.info(f"Agent mode stopped by client for token {ctx.token[:8]}...")
+                if msg_type == "voice_call_stop":
+                    logger.info(f"Voice call stopped by client for token {ctx.token[:8]}...")
                     break
                 
-                elif msg_type == "agent_audio_chunk" and not is_processing:
+                elif msg_type == "voice_call_audio_chunk" and not is_processing:
                     audio_base64 = data.get("audio_base64", "")
                     if not audio_base64:
                         continue
@@ -535,19 +535,19 @@ async def handle_agent_mode(ctx: MessageContext) -> bool:
                         
                         # Signal ready for next turn
                         await ctx.websocket.send_json({
-                            "type": "agent_listening",
+                            "type": "voice_call_listening",
                             "message": "Ready to listen"
                         })
                         
                         connection_manager.increment_message_count(ctx.websocket)
                         
     except WebSocketDisconnect:
-        logger.info(f"WebSocket disconnected during agent mode for token {ctx.token[:8]}...")
+        logger.info(f"WebSocket disconnected during voice call for token {ctx.token[:8]}...")
         return True
     except Exception as e:
-        logger.error(f"Error in agent mode: {e}", exc_info=True)
+        logger.error(f"Error in voice call: {e}", exc_info=True)
         try:
-            await send_error(ctx.websocket, f"Agent mode error: {e}")
+            await send_error(ctx.websocket, f"Voice call error: {e}")
         except:
             return True
     finally:
@@ -555,7 +555,7 @@ async def handle_agent_mode(ctx: MessageContext) -> bool:
             await asr_service.disconnect()
         except:
             pass
-        logger.info(f"Agent mode ended for token {ctx.token[:8]}...")
+        logger.info(f"Voice call ended for token {ctx.token[:8]}...")
     
     return False
 
@@ -582,7 +582,7 @@ class MessageRouter:
         self.register("ping", self._wrap_handler(handle_ping))
         # These handlers need special treatment
         self.register("switch_character", self._handle_switch_character)
-        self.register("agent_mode_start", self._handle_agent_mode_start)
+        self.register("voice_call_start", self._handle_voice_call_start)
     
     def _wrap_handler(self, handler: Callable[[MessageContext], Awaitable[Optional[bool]]]):
         """Wrap a simple handler to match the MessageHandler signature"""
@@ -598,12 +598,12 @@ class MessageRouter:
         ctx = MessageContext(websocket=websocket, token=token, session=session, data=data)
         return await handle_switch_character(ctx, self.session_manager)
     
-    async def _handle_agent_mode_start(
+    async def _handle_voice_call_start(
         self, websocket: WebSocket, token: str, session: Dict, data: Dict
     ) -> Optional[bool]:
-        """Special handler for agent_mode_start"""
+        """Special handler for voice_call_start"""
         ctx = MessageContext(websocket=websocket, token=token, session=session, data=data)
-        return await handle_agent_mode(ctx)
+        return await handle_voice_call(ctx)
     
     def register(self, msg_type: str, handler: MessageHandler):
         """Register a message handler for a specific message type"""

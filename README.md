@@ -158,26 +158,26 @@ python client/test_client.py --token dev_token_001
 }
 ```
 
-#### `agent_mode_start` - 开启连续对话模式
-开启免唤醒连续语音对话模式。
+#### `voice_call_start` - 开启语音通话模式
+开启免唤醒连续语音对话（类似电话）。
 ```json
 {
-  "type": "agent_mode_start"
+  "type": "voice_call_start"
 }
 ```
 
-#### `agent_mode_stop` - 退出连续对话模式
+#### `voice_call_stop` - 退出语音通话模式
 ```json
 {
-  "type": "agent_mode_stop"
+  "type": "voice_call_stop"
 }
 ```
 
-#### `agent_audio_chunk` - 连续模式音频块
-在 Agent 模式中发送音频块。
+#### `voice_call_audio_chunk` - 语音通话上行音频块
+在语音通话模式中发送音频块。
 ```json
 {
-  "type": "agent_audio_chunk",
+  "type": "voice_call_audio_chunk",
   "audio_base64": "<base64_encoded_chunk>"
 }
 ```
@@ -271,10 +271,10 @@ python client/test_client.py --token dev_token_001
 }
 ```
 
-#### `agent_listening` - Agent 模式等待输入
+#### `voice_call_listening` - 语音通话模式等待输入
 ```json
 {
-  "type": "agent_listening",
+  "type": "voice_call_listening",
   "message": "Ready to listen"
 }
 ```
@@ -339,10 +339,10 @@ python client/test_client.py --token dev_token_001
 服务器: audio_stream_started -> transcription* -> thinking -> audio_chunk* -> audio_end -> response
 ```
 
-#### 4. Agent 连续对话模式
+#### 4. 语音通话模式 (voice_call)
 ```
-客户端: agent_mode_start -> agent_audio_chunk* -> agent_mode_stop
-服务器: agent_listening -> transcription* -> thinking -> audio_chunk* -> audio_end -> response -> agent_listening (循环)
+客户端: voice_call_start -> voice_call_audio_chunk* -> voice_call_stop
+服务器: voice_call_listening -> transcription* -> thinking -> audio_chunk* -> audio_end -> response -> voice_call_listening (循环)
 ```
 
 ## HTTP API

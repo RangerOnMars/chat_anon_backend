@@ -273,7 +273,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 # Route message to appropriate handler
                 result = await message_router.route(websocket, token, session, data)
                 
-                # Handler returns True to signal exit (e.g., agent mode disconnect)
+                # Handler returns True to signal exit (e.g., voice call disconnect)
                 if result is True:
                     connection_active = False
                     

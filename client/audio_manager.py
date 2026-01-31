@@ -1,6 +1,6 @@
 """
 Audio Manager - Handles microphone input and speaker output using PyAudio
-Based on the reference ChatAnon agent implementation
+Based on the reference ChatAnon voice call (continuous voice) implementation
 """
 import logging
 import queue
