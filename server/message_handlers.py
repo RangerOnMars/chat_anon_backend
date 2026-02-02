@@ -499,7 +499,6 @@ async def handle_voice_call(ctx: MessageContext) -> bool:
             # Check for transcription results (non-blocking)
             if not is_processing:
                 result = await asr_service.receive_transcription()
-                
                 if result and result.get("text"):
                     text = result["text"]
                     is_partial = result.get("is_partial", True)

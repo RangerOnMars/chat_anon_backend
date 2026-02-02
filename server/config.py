@@ -85,6 +85,15 @@ def create_service_config(character_name: str = "anon") -> ServiceConfig:
         logger.warning(f"Character '{character_name}' not found, using 'anon'")
         char_config = character_manager.get_character_config("anon")
     
+    # Per-character overrides from config.yaml (tts_model, voice_id)
+    char_overrides = yaml_config.get("characters", {}).get(character_name, {})
+    tts_model = char_overrides.get("tts_model") or yaml_config.get("models", {}).get(
+        "tts_model", "speech-2.8-hd"
+    )
+    character_voice_id = char_overrides.get("voice_id") or (
+        char_config.voice_id if char_config else "AnonTokyo2026012304"
+    )
+    
     # Merge configurations
     return ServiceConfig(
         # Credentials from secrets
@@ -113,13 +122,11 @@ def create_service_config(character_name: str = "anon") -> ServiceConfig:
         llm_model=yaml_config.get("models", {}).get(
             "llm_model", "doubao-seed-1-6-lite-251015"
         ),
-        tts_model=yaml_config.get("models", {}).get(
-            "tts_model", "speech-2.8-hd"
-        ),
+        tts_model=tts_model,
         
         # Character configuration
         character_manifest_path=char_config.manifest_path if char_config else "prompts/anon/character_manifest.md",
-        character_voice_id=char_config.voice_id if char_config else "AnonTokyo2026012304",
+        character_voice_id=character_voice_id,
         
         # Audio parameters
         asr_sample_rate=yaml_config.get("audio", {}).get("asr_sample_rate", 16000),

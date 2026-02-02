@@ -39,6 +39,15 @@ models:
   # llm_model: "doubao-seed-1-6-lite-251015"
   tts_model: "speech-2.8-hd"
 
+# Character-specific TTS (optional overrides; fallback: models.tts_model and character default voice_id)
+characters:
+  anon:
+    tts_model: "speech-2.8-hd"
+    voice_id: "AnonTokyo2026012304"
+  mutsumi:
+    tts_model: "speech-2.8-hd"
+    voice_id: "Mutsumi2026012702"  # Placeholder; replace with real voice_id when available
+
 # Audio Parameters
 audio:
   # ASR settings (microphone input)

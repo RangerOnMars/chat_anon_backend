@@ -42,8 +42,13 @@ AVAILABLE_CHARACTERS: Dict[str, CharacterConfig] = {
         voice_id="AnonTokyo2026012304",
         description="MyGO!!!!! 吉他手，开朗外向的JK，高情商的乐队粘合剂"
     ),
-    # Add more characters here as needed
-    # "tomori": CharacterConfig(...),
+    "mutsumi": CharacterConfig(
+        name="mutsumi",
+        display_name="若叶睦 (Wakaba Mutsumi)",
+        manifest_path="prompts/mutsumi/character_manifest.md",
+        voice_id="MutsumiVoiceId",
+        description="Ave Mujica 吉他手，寡言少语的酷系角色"
+    ),
 }
 
 

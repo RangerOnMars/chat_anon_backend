@@ -104,6 +104,7 @@ class SessionManager:
         # Update services
         session["llm_service"].clear_history()
         session["llm_service"].load_character(config.character_manifest_path)
+        session["tts_service"].model = config.tts_model
         session["tts_service"].voice_id = config.character_voice_id
         session["config"] = config
         session["character_name"] = new_character
