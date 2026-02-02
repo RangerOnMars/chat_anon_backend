@@ -147,7 +147,7 @@ class TTSService(StreamingService):
                 "channel": self.config.audio_channels
             },
             "pronunciation_dict": {
-                "tone": ["あのん/Anon", "こんにちは/こんにちは"],
+                "tone": ["あのん/Anon", "こんにちは/こんにち は"],
             },
             "language_boost": "Japanese",
         }
