@@ -62,6 +62,8 @@ class ServerConfig:
     port: int = 8765
     debug: bool = False
     log_level: str = "INFO"
+    ssl_certfile: Optional[str] = None
+    ssl_keyfile: Optional[str] = None
 
 
 def create_service_config(character_name: str = "anon") -> ServiceConfig:
@@ -156,12 +158,15 @@ def get_server_config() -> ServerConfig:
     """Get server configuration"""
     yaml_config = load_yaml_config()
     server_section = yaml_config.get("server", {})
+    ssl_section = yaml_config.get("ssl", {})
     
     return ServerConfig(
         host=server_section.get("host", "0.0.0.0"),
         port=server_section.get("port", 8765),
         debug=server_section.get("debug", False),
         log_level=yaml_config.get("logging", {}).get("level", "INFO"),
+        ssl_certfile=ssl_section.get("ssl_certfile"),
+        ssl_keyfile=ssl_section.get("ssl_keyfile"),
     )
 
 

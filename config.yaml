@@ -20,6 +20,9 @@ ssl:
   # Set to true in production with valid certificates
   # MiniMax may require this to be false due to certificate issues
   verify_tts: false
+  # Optional: when both are set, backend runs with HTTPS/WSS
+  # ssl_certfile: "/etc/letsencrypt/live/anontokyo.ltd/fullchain.pem"
+  # ssl_keyfile: "/etc/letsencrypt/live/anontokyo.ltd/privkey.pem"
 
 # Timeout Configuration (in seconds)
 timeouts:

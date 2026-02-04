@@ -319,15 +319,37 @@ def run_server():
     # Setup logging level
     logging.getLogger().setLevel(getattr(logging, config.log_level.upper(), logging.INFO))
     
-    logger.info(f"Starting server on {config.host}:{config.port}")
+    use_ssl = bool(config.ssl_certfile and config.ssl_keyfile)
+    if use_ssl:
+        if not os.path.isfile(config.ssl_certfile):
+            logger.warning(f"SSL certfile not found: {config.ssl_certfile}, starting without HTTPS")
+            use_ssl = False
+        elif not os.path.isfile(config.ssl_keyfile):
+            logger.warning(f"SSL keyfile not found: {config.ssl_keyfile}, starting without HTTPS")
+            use_ssl = False
+    elif config.ssl_certfile or config.ssl_keyfile:
+        logger.warning("SSL requires both ssl_certfile and ssl_keyfile; starting without HTTPS")
     
-    uvicorn.run(
-        "server.main:app",
-        host=config.host,
-        port=config.port,
-        reload=config.debug,
-        log_level=config.log_level.lower()
-    )
+    if use_ssl:
+        logger.info(f"Starting server on https://{config.host}:{config.port} (SSL enabled)")
+        uvicorn.run(
+            "server.main:app",
+            host=config.host,
+            port=config.port,
+            reload=config.debug,
+            log_level=config.log_level.lower(),
+            ssl_certfile=config.ssl_certfile,
+            ssl_keyfile=config.ssl_keyfile,
+        )
+    else:
+        logger.info(f"Starting server on http://{config.host}:{config.port}")
+        uvicorn.run(
+            "server.main:app",
+            host=config.host,
+            port=config.port,
+            reload=config.debug,
+            log_level=config.log_level.lower()
+        )
 
 
 if __name__ == "__main__":

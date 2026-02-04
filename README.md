@@ -44,6 +44,8 @@ chat_anon_backend/
 
 ### 1. 安装依赖
 
+portaudio19-dev（if is Linux）
+
 ```bash
 pip install -r requirements.txt
 ```
@@ -406,3 +408,4 @@ llm:
 ## License
 
 MIT
+
