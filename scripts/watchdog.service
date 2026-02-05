@@ -5,7 +5,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=/home/admin/chat_anon_ws/chat_anon_backend
-ExecStart=/bin/bash -c 'cd /home/admin/chat_anon_ws/chat_anon_frontend && bash dev-https.sh & cd /home/admin/chat_anon_ws/chat_anon_backend && source venv/bin/activate && exec python3 -m server.main'
+ExecStart=/home/admin/chat_anon_ws/chat_anon_backend/scripts/start-watchdog.sh
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
