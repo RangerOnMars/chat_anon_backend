@@ -256,7 +256,7 @@ async def websocket_endpoint(websocket: WebSocket):
             "message": "Connection established successfully"
         })
         
-        logger.info(f"Client connected: token={token[:8]}..., character={character_name}")
+        logger.info(f"Client connected: token={token[:20]}..., character={character_name}")
         
         # Main message loop - uses MessageRouter for clean dispatch
         connection_active = True
