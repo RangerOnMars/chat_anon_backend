@@ -62,6 +62,8 @@ class ServerConfig:
     port: int = 8765
     debug: bool = False
     log_level: str = "INFO"
+    log_file: Optional[str] = None
+    log_console: bool = True
     ssl_certfile: Optional[str] = None
     ssl_keyfile: Optional[str] = None
 
@@ -159,12 +161,19 @@ def get_server_config() -> ServerConfig:
     yaml_config = load_yaml_config()
     server_section = yaml_config.get("server", {})
     ssl_section = yaml_config.get("ssl", {})
+    logging_section = yaml_config.get("logging", {})
+    
+    log_file = logging_section.get("file")
+    if log_file and not os.path.isabs(log_file):
+        log_file = os.path.join(BASE_DIR, log_file)
     
     return ServerConfig(
         host=server_section.get("host", "0.0.0.0"),
         port=server_section.get("port", 8765),
         debug=server_section.get("debug", False),
-        log_level=yaml_config.get("logging", {}).get("level", "INFO"),
+        log_level=logging_section.get("level", "INFO"),
+        log_file=log_file,
+        log_console=logging_section.get("console", True),
         ssl_certfile=ssl_section.get("ssl_certfile"),
         ssl_keyfile=ssl_section.get("ssl_keyfile"),
     )

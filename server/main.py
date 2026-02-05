@@ -319,6 +319,16 @@ def run_server():
     # Setup logging level
     logging.getLogger().setLevel(getattr(logging, config.log_level.upper(), logging.INFO))
     
+    # Add file handler so logs also go to server.log
+    if config.log_file:
+        log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        try:
+            file_handler = logging.FileHandler(config.log_file, encoding="utf-8")
+            file_handler.setFormatter(logging.Formatter(log_format))
+            logging.getLogger().addHandler(file_handler)
+        except Exception as e:
+            logger.warning(f"Could not add log file handler for %s: %s", config.log_file, e)
+    
     use_ssl = bool(config.ssl_certfile and config.ssl_keyfile)
     if use_ssl:
         if not os.path.isfile(config.ssl_certfile):

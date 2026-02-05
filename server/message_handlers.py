@@ -226,6 +226,9 @@ async def handle_text_message(ctx: MessageContext) -> Optional[bool]:
         await send_error(ctx.websocket, "Empty message content")
         return None
     
+    log_content = content if len(content) <= 500 else content[:500] + "..."
+    logger.info("User text input: %s", log_content)
+    
     await process_llm_and_stream_tts(ctx, content)
     connection_manager.increment_message_count(ctx.websocket)
     return None
@@ -294,6 +297,9 @@ async def handle_audio_message(ctx: MessageContext) -> Optional[bool]:
         "text": full_transcription,
         "is_partial": False
     })
+    
+    log_text = full_transcription if len(full_transcription) <= 500 else full_transcription[:500] + "..."
+    logger.info("ASR transcription: %s", log_text)
     
     # Process through LLM and TTS
     await process_llm_and_stream_tts(ctx, full_transcription)
@@ -378,7 +384,8 @@ async def handle_audio_stream_end(ctx: MessageContext) -> Optional[bool]:
             "is_partial": False
         })
         
-        logger.info(f"ASR transcription: {full_transcription}")
+        log_text = full_transcription if len(full_transcription) <= 500 else full_transcription[:500] + "..."
+        logger.info("ASR transcription: %s", log_text)
         
         # Process through LLM and TTS
         await process_llm_and_stream_tts(ctx, full_transcription)
@@ -538,7 +545,8 @@ async def handle_voice_call(ctx: MessageContext) -> bool:
                     if not is_partial:
                         is_processing = True
                         accumulated_text = text
-                        logger.info(f"VAD detected speech end: {text}")
+                        log_text = text if len(text) <= 500 else text[:500] + "..."
+                        logger.info("ASR transcription: %s", log_text)
                         
                         # Signal ASR processing end
                         await send_status_event(ctx.websocket, "asr_end", text=accumulated_text)
