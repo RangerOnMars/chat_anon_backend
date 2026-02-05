@@ -148,7 +148,7 @@ class TTSService(StreamingService):
             },
             "pronunciation_dict": {
                 "tone": ["あのん/Anon",
-                        "こんにちは/こんにちは。",
+                        "こんにちは/|こんにちは|",
                         "CRYCHIC/クライシック",
                         "AveMujica/アヴェムジカ"],
             },
