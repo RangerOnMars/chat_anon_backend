@@ -26,7 +26,8 @@ class CharacterConfig:
     manifest_path: str
     voice_id: str
     description: str = ""
-    
+    live2d_model_set: Optional[str] = None  # e.g. "casual-2023"; frontend uses under live2d/{name}/{live2d_model_set}/
+
     @property
     def full_manifest_path(self) -> str:
         """Get the full path to the manifest file"""
@@ -40,14 +41,16 @@ AVAILABLE_CHARACTERS: Dict[str, CharacterConfig] = {
         display_name="千早爱音 (Chihaya Anon)",
         manifest_path="prompts/anon/character_manifest.md",
         voice_id="AnonTokyo2026012304",
-        description="MyGO!!!!! 吉他手，开朗外向的JK，高情商的乐队粘合剂"
+        description="MyGO!!!!! 吉他手，开朗外向的JK，高情商的乐队粘合剂",
+        live2d_model_set="casual-2023",
     ),
     "mutsumi": CharacterConfig(
         name="mutsumi",
         display_name="若叶睦 (Wakaba Mutsumi)",
         manifest_path="prompts/mutsumi/character_manifest.md",
         voice_id="MutsumiVoiceId",
-        description="Ave Mujica 吉他手，寡言少语的酷系角色"
+        description="Ave Mujica 吉他手，寡言少语的酷系角色",
+        live2d_model_set="school_summer-2023",
     ),
 }
 
@@ -127,7 +130,8 @@ class CharacterManager:
                 "name": config.name,
                 "display_name": config.display_name,
                 "description": config.description,
-                "voice_id": config.voice_id
+                "voice_id": config.voice_id,
+                "live2d_model_set": config.live2d_model_set,
             }
             for config in self._available_characters.values()
         ]

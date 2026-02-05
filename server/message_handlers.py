@@ -396,16 +396,40 @@ async def handle_switch_character(
 ) -> Optional[bool]:
     """Handle character switch request."""
     new_character = ctx.data.get("character_name", "").lower()
-    
+    # #region agent log
+    try:
+        import json
+        avail = character_manager.is_character_available(new_character)
+        with open(r"d:\coding_ws\.cursor\debug.log", "a", encoding="utf-8") as _f:
+            _f.write(json.dumps({"location": "message_handlers.py:handle_switch_character", "message": "handler entered", "data": {"new_character": new_character, "is_available": avail}, "timestamp": __import__("time").time() * 1000, "sessionId": "debug-session", "hypothesisId": "H2"}) + "\n")
+    except Exception:
+        pass
+    # #endregion
     if not character_manager.is_character_available(new_character):
         await send_error(ctx.websocket, f"Character '{new_character}' not available")
         return None
-    
+
     # Switch character in session
-    if await session_manager.switch_character(ctx.token, new_character):
+    switched = await session_manager.switch_character(ctx.token, new_character)
+    # #region agent log
+    try:
+        import json
+        with open(r"d:\coding_ws\.cursor\debug.log", "a", encoding="utf-8") as _f:
+            _f.write(json.dumps({"location": "message_handlers.py:handle_switch_character", "message": "switch_character result", "data": {"switched": switched}, "timestamp": __import__("time").time() * 1000, "sessionId": "debug-session", "hypothesisId": "H2"}) + "\n")
+    except Exception:
+        pass
+    # #endregion
+    if switched:
         await connection_manager.update_character(ctx.websocket, new_character)
         char_config = character_manager.get_character_config(new_character)
-        
+        # #region agent log
+        try:
+            import json
+            with open(r"d:\coding_ws\.cursor\debug.log", "a", encoding="utf-8") as _f:
+                _f.write(json.dumps({"location": "message_handlers.py:handle_switch_character", "message": "sending character_switched", "data": {"character": new_character}, "timestamp": __import__("time").time() * 1000, "sessionId": "debug-session", "hypothesisId": "H3"}) + "\n")
+        except Exception:
+            pass
+        # #endregion
         await ctx.websocket.send_json({
             "type": "character_switched",
             "character": new_character,
@@ -634,7 +658,14 @@ class MessageRouter:
             None to continue, True to exit main loop, False for unknown message type
         """
         msg_type = data.get("type", "")
-        
+        # #region agent log
+        try:
+            import json
+            with open(r"d:\coding_ws\.cursor\debug.log", "a", encoding="utf-8") as _f:
+                _f.write(json.dumps({"location": "message_handlers.py:route", "message": "route message", "data": {"msg_type": msg_type, "character_name": data.get("character_name") if msg_type == "switch_character" else None}, "timestamp": __import__("time").time() * 1000, "sessionId": "debug-session", "hypothesisId": "H1"}) + "\n")
+        except Exception:
+            pass
+        # #endregion
         handler = self._handlers.get(msg_type)
         if handler:
             return await handler(websocket, token, session, data)
