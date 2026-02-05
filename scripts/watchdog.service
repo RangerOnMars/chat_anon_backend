@@ -1,0 +1,15 @@
+[Unit]
+Description=Chat Anon Frontend + Backend Watchdog
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/admin/chat_anon_ws/chat_anon_backend
+ExecStart=/bin/bash -c 'cd /home/admin/chat_anon_ws/chat_anon_frontend && bash dev-https.sh & cd /home/admin/chat_anon_ws/chat_anon_backend && source venv/bin/activate && exec python3 -m server.main'
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

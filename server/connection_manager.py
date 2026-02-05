@@ -88,7 +88,7 @@ class ConnectionManager:
             self._connections[token] = conn_info
             self._websocket_to_token[websocket] = token
             
-            logger.info(f"Connection established: token={token[:8]}..., character={character_name}")
+            logger.info(f"Connection established: token={token[:20]}..., character={character_name}")
             return True
     
     def register_accepted_connection(
